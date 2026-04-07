@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type {
   DashboardResponse,
   ModelRecommendation
@@ -85,12 +86,18 @@ export function Shell({ dashboard, recommendations }: ShellProps) {
               accelerate with TeaCache, and finish with upscale and review.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
-              <button className="rounded-full bg-black px-5 py-3 text-sm font-medium text-white">
+              <Link
+                href="/studio"
+                className="rounded-full bg-black px-5 py-3 text-sm font-medium text-white"
+              >
                 Start workflow
-              </button>
-              <button className="rounded-full border border-black/10 bg-white px-5 py-3 text-sm font-medium">
-                Review architecture
-              </button>
+              </Link>
+              <Link
+                href="/providers"
+                className="rounded-full border border-black/10 bg-white px-5 py-3 text-sm font-medium"
+              >
+                Configure models
+              </Link>
             </div>
             <div className="mt-12 grid gap-4 sm:grid-cols-3">
               {dashboard.metrics.map((metric) => (

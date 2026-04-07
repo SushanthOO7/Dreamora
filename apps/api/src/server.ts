@@ -2,8 +2,12 @@ import cors from "@fastify/cors";
 import Fastify from "fastify";
 import {
   dashboardResponse,
+  modelUsageBreakdown,
   modelRecommendations,
-  orchestrationStrategy
+  orchestrationStrategy,
+  providerConfigs,
+  usageMetrics,
+  weeklyUsageSeries
 } from "@dreamora/shared";
 
 const app = Fastify({
@@ -23,6 +27,14 @@ app.get("/api/dashboard", async () => dashboardResponse);
 app.get("/api/models/recommendations", async () => modelRecommendations);
 
 app.get("/api/strategy", async () => orchestrationStrategy);
+
+app.get("/api/providers", async () => providerConfigs);
+
+app.get("/api/reporting/usage", async () => ({
+  metrics: usageMetrics,
+  breakdown: modelUsageBreakdown,
+  weekly: weeklyUsageSeries
+}));
 
 app.get("/api/jobs/templates", async () => ({
   templates: [

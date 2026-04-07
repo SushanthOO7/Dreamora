@@ -36,6 +36,60 @@ export type ModelRecommendation = {
   tags: string[];
 };
 
+export type ProjectSummary = {
+  name: string;
+  format: string;
+  status: string;
+  updatedAt: string;
+  summary: string;
+};
+
+export type PromptPreset = {
+  title: string;
+  engine: string;
+  type: string;
+  summary: string;
+  tags: string[];
+};
+
+export type RunSummary = {
+  title: string;
+  engine: string;
+  status: string;
+  duration: string;
+  output: string;
+};
+
+export type SettingsGroup = {
+  title: string;
+  description: string;
+  items: {
+    label: string;
+    value: string;
+  }[];
+};
+
+export type ProviderConfig = {
+  name: string;
+  category: string;
+  status: string;
+  auth: string;
+  defaultModel: string;
+  note: string;
+};
+
+export type UsageMetric = {
+  label: string;
+  value: string;
+  detail: string;
+};
+
+export type UsageSeries = {
+  label: string;
+  value: number;
+  color: string;
+};
+
 export const dashboardResponse: DashboardResponse = {
   metrics: [
     {
@@ -185,3 +239,239 @@ export const orchestrationStrategy = {
     finish: "RIFE and SeedVR2"
   }
 };
+
+export const projectSummaries: ProjectSummary[] = [
+  {
+    name: "Aura product teaser",
+    format: "Image to video",
+    status: "In progress",
+    updatedAt: "2 hours ago",
+    summary:
+      "Luxury product launch workflow with FLUX stills, Wan animation, and SeedVR2 upscale."
+  },
+  {
+    name: "Noir fashion moodboard",
+    format: "Image batch",
+    status: "Ready",
+    updatedAt: "Yesterday",
+    summary:
+      "Editorial still generation with typography overlays and portrait-safe prompt presets."
+  },
+  {
+    name: "Studio lighting tests",
+    format: "Research set",
+    status: "Draft",
+    updatedAt: "3 days ago",
+    summary:
+      "Controlled prompt experiments comparing lens language, film stock cues, and negative handling."
+  }
+];
+
+export const promptPresets: PromptPreset[] = [
+  {
+    title: "Cinematic product close-up",
+    engine: "FLUX.1-dev GGUF",
+    type: "Still image",
+    summary:
+      "Built for premium hardware shots with precise reflections, shallow depth, and restrained copy.",
+    tags: ["Luxury", "Macro", "Typography-safe"]
+  },
+  {
+    title: "Founder intro motion pass",
+    engine: "Wan 2.2 5B",
+    type: "Video",
+    summary:
+      "Short talking-head animation with soft camera drift, stable framing, and upscale-ready pacing.",
+    tags: ["16 fps", "TeaCache", "RIFE"]
+  },
+  {
+    title: "Brand moodboard retrieval",
+    engine: "Assistant + RAG",
+    type: "Preparation",
+    summary:
+      "Pulls saved references, style notes, and prior winning prompts before generation starts.",
+    tags: ["Memory", "References", "Preflight"]
+  }
+];
+
+export const runSummaries: RunSummary[] = [
+  {
+    title: "Aura teaser keyframe set",
+    engine: "FLUX.1-dev GGUF",
+    status: "Completed",
+    duration: "4m 12s",
+    output: "12 stills"
+  },
+  {
+    title: "Aura teaser motion draft",
+    engine: "Wan 2.2 5B",
+    status: "Running",
+    duration: "11m 03s",
+    output: "480p clip"
+  },
+  {
+    title: "Editorial upscale pass",
+    engine: "SeedVR2",
+    status: "Queued",
+    duration: "Pending",
+    output: "1080p master"
+  }
+];
+
+export const settingsGroups: SettingsGroup[] = [
+  {
+    title: "Inference stack",
+    description: "Current production defaults tuned for a single V100 32GB server.",
+    items: [
+      {
+        label: "Image engine",
+        value: "FLUX.1-dev GGUF Q5_K_S"
+      },
+      {
+        label: "Video engine",
+        value: "Wan 2.2 5B FP16"
+      },
+      {
+        label: "Finish chain",
+        value: "RIFE -> SeedVR2"
+      }
+    ]
+  },
+  {
+    title: "Orchestration",
+    description: "Service endpoints and runtime switches for the local single-server setup.",
+    items: [
+      {
+        label: "API",
+        value: "http://127.0.0.1:8787"
+      },
+      {
+        label: "ComfyUI",
+        value: "http://127.0.0.1:8188"
+      },
+      {
+        label: "Retrieval mode",
+        value: "Enabled for prompt memory"
+      }
+    ]
+  }
+];
+
+export const providerConfigs: ProviderConfig[] = [
+  {
+    name: "Dreamora local",
+    category: "Self-hosted",
+    status: "Connected",
+    auth: "Internal runtime",
+    defaultModel: "FLUX + Wan 2.2",
+    note: "Primary local path using your V100 server and ComfyUI orchestration."
+  },
+  {
+    name: "OpenAI images",
+    category: "Third-party API",
+    status: "Needs key",
+    auth: "API key",
+    defaultModel: "gpt-image-1",
+    note: "Good fallback for fast external image generation when you want hosted inference."
+  },
+  {
+    name: "Runway",
+    category: "Third-party API",
+    status: "Needs key",
+    auth: "API key",
+    defaultModel: "Gen-4",
+    note: "Video-first hosted provider for external motion generation."
+  },
+  {
+    name: "Replicate",
+    category: "Third-party API",
+    status: "Optional",
+    auth: "API token",
+    defaultModel: "Flux / video community models",
+    note: "Useful as a multi-model fallback layer when you want broader model coverage."
+  }
+];
+
+export const usageMetrics: UsageMetric[] = [
+  {
+    label: "Total tokens",
+    value: "2.48M",
+    detail: "Prompting, prompt memory, and workflow assistance over the last 30 days."
+  },
+  {
+    label: "Images generated",
+    value: "684",
+    detail: "Includes batch generations and upscale-ready keyframe sets."
+  },
+  {
+    label: "Videos rendered",
+    value: "92",
+    detail: "Counts Wan, hosted provider output, and finalized delivery masters."
+  },
+  {
+    label: "Top model",
+    value: "Wan 2.2 5B",
+    detail: "Most frequently used engine for finished motion work."
+  }
+];
+
+export const modelUsageBreakdown: UsageSeries[] = [
+  {
+    label: "FLUX.1-dev GGUF",
+    value: 38,
+    color: "#111111"
+  },
+  {
+    label: "Wan 2.2 5B",
+    value: 31,
+    color: "#4d7cfe"
+  },
+  {
+    label: "SeedVR2",
+    value: 17,
+    color: "#6ccf96"
+  },
+  {
+    label: "Third-party APIs",
+    value: 14,
+    color: "#f4b35e"
+  }
+];
+
+export const weeklyUsageSeries: UsageSeries[] = [
+  {
+    label: "Mon",
+    value: 42,
+    color: "#d5def9"
+  },
+  {
+    label: "Tue",
+    value: 58,
+    color: "#bdd0ff"
+  },
+  {
+    label: "Wed",
+    value: 80,
+    color: "#a9c2ff"
+  },
+  {
+    label: "Thu",
+    value: 64,
+    color: "#8fb2ff"
+  },
+  {
+    label: "Fri",
+    value: 93,
+    color: "#6e9cff"
+  },
+  {
+    label: "Sat",
+    value: 55,
+    color: "#8ec5a5"
+  },
+  {
+    label: "Sun",
+    value: 34,
+    color: "#c7d4e8"
+  }
+];

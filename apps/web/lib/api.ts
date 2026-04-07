@@ -1,10 +1,17 @@
 import type {
   DashboardResponse,
-  ModelRecommendation
+  ModelRecommendation,
+  ProviderConfig,
+  UsageMetric,
+  UsageSeries
 } from "@dreamora/shared";
 import {
   dashboardResponse,
-  modelRecommendations
+  modelRecommendations,
+  modelUsageBreakdown,
+  providerConfigs,
+  usageMetrics,
+  weeklyUsageSeries
 } from "@dreamora/shared";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787";
@@ -39,4 +46,24 @@ export function getDashboard(): Promise<DashboardResponse> {
 
 export function getRecommendations(): Promise<ModelRecommendation[]> {
   return getJson<ModelRecommendation[]>("/api/models/recommendations");
+}
+
+export function getProviders(): Promise<ProviderConfig[]> {
+  return getJson<ProviderConfig[]>("/api/providers");
+}
+
+export function getUsageReporting(): Promise<{
+  metrics: UsageMetric[];
+  breakdown: UsageSeries[];
+  weekly: UsageSeries[];
+}> {
+  return getJson<{
+    metrics: UsageMetric[];
+    breakdown: UsageSeries[];
+    weekly: UsageSeries[];
+  }>("/api/reporting/usage").catch(() => ({
+    metrics: usageMetrics,
+    breakdown: modelUsageBreakdown,
+    weekly: weeklyUsageSeries
+  }));
 }
