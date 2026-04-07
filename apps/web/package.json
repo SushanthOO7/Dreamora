@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dreamora/shared": "0.1.0",
+    "@dreamora/shared": "file:../../packages/shared",
     "clsx": "^2.1.1",
     "next": "^15.3.0",
     "react": "^19.1.0",
