@@ -1,0 +1,9 @@
+node_modules
+.next
+dist
+out
+.turbo
+coverage
+.env
+.env.local
+npm-debug.log*
