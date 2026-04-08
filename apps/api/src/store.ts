@@ -37,6 +37,11 @@ type StoredRun = {
   duration: string;
   output: string;
   tokensUsed: number;
+  promptExcerpt?: string;
+  aspectRatio?: string;
+  quality?: "Standard" | "High" | "Ultra";
+  batchSize?: number;
+  backend?: "comfy" | "simulated";
   createdAt: string;
   updatedAt: string;
 };
@@ -110,6 +115,11 @@ function seedStore(): StoreSchema {
       duration: run.duration,
       output: run.output,
       tokensUsed: 12000 + index * 3500,
+      promptExcerpt: index % 2 === 0 ? "studio seed image prompt" : "studio seed video prompt",
+      aspectRatio: index % 2 === 0 ? "1:1" : "16:9",
+      quality: index % 2 === 0 ? "High" : "Standard",
+      batchSize: index % 2 === 0 ? 2 : 1,
+      backend: "simulated",
       createdAt: new Date(Date.now() - (index + 1) * 24 * 60 * 60 * 1000).toISOString(),
       updatedAt: created
     })),
@@ -215,6 +225,11 @@ export async function createRun(input: {
   duration: string;
   output: string;
   tokensUsed: number;
+  promptExcerpt?: string;
+  aspectRatio?: string;
+  quality?: "Standard" | "High" | "Ultra";
+  batchSize?: number;
+  backend?: "comfy" | "simulated";
 }): Promise<StoredRun> {
   const store = getStore();
   const record: StoredRun = {
@@ -292,7 +307,12 @@ export async function updateRunStatus(
 
 export async function updateRunFields(
   id: string,
-  fields: Partial<Pick<StoredRun, "status" | "duration" | "output" | "tokensUsed">>
+  fields: Partial<
+    Pick<
+      StoredRun,
+      "status" | "duration" | "output" | "tokensUsed" | "backend" | "promptExcerpt" | "aspectRatio" | "quality" | "batchSize"
+    >
+  >
 ): Promise<StoredRun> {
   const store = getStore();
   const run = store.runs.find((item) => item.id === id);
@@ -315,6 +335,26 @@ export async function updateRunFields(
 
   if (typeof fields.tokensUsed === "number") {
     run.tokensUsed = fields.tokensUsed;
+  }
+
+  if (typeof fields.backend === "string") {
+    run.backend = fields.backend;
+  }
+
+  if (typeof fields.promptExcerpt === "string") {
+    run.promptExcerpt = fields.promptExcerpt;
+  }
+
+  if (typeof fields.aspectRatio === "string") {
+    run.aspectRatio = fields.aspectRatio;
+  }
+
+  if (typeof fields.quality === "string") {
+    run.quality = fields.quality;
+  }
+
+  if (typeof fields.batchSize === "number") {
+    run.batchSize = fields.batchSize;
   }
 
   run.updatedAt = nowIso();

@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import {
   deriveModelsFromProviders,
   getGenerationStatus,
+  getStudioSuggestions,
   startGeneration
 } from "../lib/client-api";
 
@@ -57,8 +58,31 @@ export function StudioWorkbench({
   const [running, setRunning] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [runtimeNotice, setRuntimeNotice] = useState("");
+  const [suggestionError, setSuggestionError] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
   const [runs, setRuns] = useState<RunSummary[]>(initialRuns);
   const [promptText, setPromptText] = useState(defaultPrompt("image"));
+  const [memoryPrompts, setMemoryPrompts] = useState<
+    Array<{ id: string; title: string; summary: string; tags: string[]; score: number }>
+  >([]);
+  const [memoryRuns, setMemoryRuns] = useState<
+    Array<{
+      id: string;
+      title: string;
+      engine: string;
+      duration: string;
+      tokensUsed: number;
+      aspectRatio: string | null;
+      quality: string | null;
+    }>
+  >([]);
+  const [recommendedSettings, setRecommendedSettings] = useState<{
+    model: string;
+    aspectRatio: string;
+    quality: "Standard" | "High" | "Ultra";
+    batchSize: number;
+    averageTokens: number;
+  } | null>(null);
 
   const modelGroups = useMemo(
     () => deriveModelsFromProviders(providers),
@@ -92,6 +116,47 @@ export function StudioWorkbench({
     } else {
       handleMode("image");
     }
+  }
+
+  async function handleAnalyzePrompt() {
+    setSuggesting(true);
+    setSuggestionError("");
+
+    try {
+      const result = await getStudioSuggestions(mode, promptText);
+      setMemoryPrompts(result.memory.promptMatches);
+      setMemoryRuns(
+        result.memory.topRuns.map((run) => ({
+          id: run.id,
+          title: run.title,
+          engine: run.engine,
+          duration: run.duration,
+          tokensUsed: run.tokensUsed,
+          aspectRatio: run.aspectRatio,
+          quality: run.quality
+        }))
+      );
+      setRecommendedSettings(result.recommendations);
+      setRuntimeNotice("Prompt memory analysis updated from successful runs.");
+    } catch {
+      setSuggestionError("Could not fetch prompt memory recommendations.");
+    } finally {
+      setSuggesting(false);
+    }
+  }
+
+  function applyRecommendedSettings() {
+    if (!recommendedSettings) {
+      return;
+    }
+
+    setSelectedModel(recommendedSettings.model);
+    setRatio(recommendedSettings.aspectRatio);
+    setQuality(recommendedSettings.quality);
+    if (mode === "image") {
+      setBatch(String(recommendedSettings.batchSize));
+    }
+    setRuntimeNotice("Applied recommended settings from memory.");
   }
 
   async function pollGeneration(jobId: string, runId: string) {
@@ -284,10 +349,32 @@ export function StudioWorkbench({
             {running ? "Generating..." : "Generate"}
           </button>
         </div>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <button
+            onClick={handleAnalyzePrompt}
+            disabled={suggesting || !promptText.trim()}
+            className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm disabled:opacity-60"
+          >
+            {suggesting ? "Analyzing..." : "Analyze Prompt"}
+          </button>
+          <button
+            onClick={applyRecommendedSettings}
+            disabled={!recommendedSettings}
+            className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm disabled:opacity-60"
+          >
+            Apply Best Settings
+          </button>
+          {recommendedSettings ? (
+            <span className="text-sm text-black/65">
+              Avg tokens: {recommendedSettings.averageTokens.toLocaleString()}
+            </span>
+          ) : null}
+        </div>
         {runtimeNotice ? (
           <p className="mt-3 text-sm text-black/70">{runtimeNotice}</p>
         ) : null}
         {submitError ? <p className="mt-2 text-sm text-red-600">{submitError}</p> : null}
+        {suggestionError ? <p className="mt-2 text-sm text-red-600">{suggestionError}</p> : null}
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
@@ -480,6 +567,62 @@ export function StudioWorkbench({
                 manual writing during iterations.
               </p>
             </div>
+          </div>
+
+          <div className="panel rounded-[34px] p-6">
+            <p className="text-sm text-black/45">Prompt memory</p>
+            <h3 className="mt-2 text-xl font-semibold tracking-tight">
+              Retrieved context
+            </h3>
+            {memoryPrompts.length === 0 ? (
+              <p className="mt-3 text-sm leading-6 text-black/55">
+                Analyze your prompt to retrieve similar presets and successful run signals.
+              </p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {memoryPrompts.slice(0, 3).map((item) => (
+                  <div
+                    key={item.id}
+                    className="rounded-[20px] border border-black/8 bg-white px-4 py-3"
+                  >
+                    <p className="text-sm font-medium">{item.title}</p>
+                    <p className="mt-1 text-xs text-black/55">{item.summary}</p>
+                    <p className="mt-2 text-xs text-black/45">
+                      score {item.score} · {item.tags.slice(0, 3).join(", ")}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="panel rounded-[34px] p-6">
+            <p className="text-sm text-black/45">Run comparison</p>
+            <h3 className="mt-2 text-xl font-semibold tracking-tight">
+              Best recent completions
+            </h3>
+            {memoryRuns.length === 0 ? (
+              <p className="mt-3 text-sm leading-6 text-black/55">
+                No completed run memory loaded yet.
+              </p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {memoryRuns.slice(0, 3).map((run) => (
+                  <div
+                    key={run.id}
+                    className="rounded-[20px] border border-black/8 bg-white px-4 py-3"
+                  >
+                    <p className="text-sm font-medium">{run.title}</p>
+                    <p className="mt-1 text-xs text-black/55">
+                      {run.engine} · {run.duration}
+                    </p>
+                    <p className="mt-1 text-xs text-black/45">
+                      {run.aspectRatio ?? "n/a"} · {run.quality ?? "n/a"} · {run.tokensUsed.toLocaleString()} tokens
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
       </div>

@@ -125,6 +125,40 @@ export type GenerationStatusResponse = {
   workflowPath: string | null;
 };
 
+export type StudioSuggestionsResponse = {
+  mode: "image" | "video";
+  memory: {
+    promptMatches: Array<{
+      id: string;
+      title: string;
+      summary: string;
+      tags: string[];
+      score: number;
+    }>;
+    topRuns: Array<{
+      id: string;
+      title: string;
+      engine: string;
+      mode: "image" | "video";
+      status: string;
+      duration: string;
+      output: string;
+      tokensUsed: number;
+      aspectRatio: string | null;
+      quality: string | null;
+      batchSize: number | null;
+      promptExcerpt: string | null;
+    }>;
+  };
+  recommendations: {
+    model: string;
+    aspectRatio: string;
+    quality: "Standard" | "High" | "Ultra";
+    batchSize: number;
+    averageTokens: number;
+  };
+};
+
 export async function startGeneration(
   input: StartGenerationRequest
 ): Promise<StartGenerationResponse> {
@@ -145,6 +179,27 @@ export async function getGenerationStatus(
   return response.json() as Promise<GenerationStatusResponse>;
 }
 
+export async function getStudioSuggestions(
+  mode: "image" | "video",
+  query: string
+): Promise<StudioSuggestionsResponse> {
+  const params = new URLSearchParams();
+  params.set("mode", mode);
+  if (query.trim()) {
+    params.set("query", query.trim());
+  }
+
+  const response = await fetch(`${API_URL}/api/studio/suggestions?${params.toString()}`, {
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    throw new Error("Could not load studio suggestions");
+  }
+
+  return response.json() as Promise<StudioSuggestionsResponse>;
+}
+
 export type StudioModelGroups = {
   imageModels: string[];
   videoModels: string[];
@@ -155,7 +210,7 @@ export function deriveModelsFromProviders(providers: ProviderConfig[]): StudioMo
   const videoModels: string[] = [];
 
   for (const provider of providers) {
-    const model = `${provider.name} ${provider.defaultModel}`;
+    const model = provider.defaultModel?.trim() || `${provider.name} model`;
     const text = `${provider.name} ${provider.defaultModel}`.toLowerCase();
     const isVideo = text.includes("wan") || text.includes("runway") || text.includes("video");
     const isConnected = provider.secretConfigured || provider.category === "Self-hosted";
@@ -172,7 +227,7 @@ export function deriveModelsFromProviders(providers: ProviderConfig[]): StudioMo
   }
 
   return {
-    imageModels: imageModels.length > 0 ? imageModels : ["Dreamora FLUX local"],
-    videoModels: videoModels.length > 0 ? videoModels : ["Dreamora Wan 2.2 local"]
+    imageModels: imageModels.length > 0 ? imageModels : ["sd_xl_base_1.0.safetensors"],
+    videoModels: videoModels.length > 0 ? videoModels : ["wan2.2_ti2v_5B_fp16.safetensors"]
   };
 }

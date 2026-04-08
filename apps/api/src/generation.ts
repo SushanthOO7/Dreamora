@@ -96,6 +96,10 @@ function applyWorkflowTokens(
   const batch = request.mode === "image" ? request.batchSize ?? 1 : 1;
 
   return workflowText
+    .replaceAll("\"__WIDTH__\"", String(width))
+    .replaceAll("\"__HEIGHT__\"", String(height))
+    .replaceAll("\"__STEPS__\"", String(steps))
+    .replaceAll("\"__BATCH__\"", String(batch))
     .replaceAll("__PROMPT__", request.prompt)
     .replaceAll("__MODEL__", request.model)
     .replaceAll("__WIDTH__", String(width))
@@ -134,7 +138,8 @@ async function submitToComfy(
   });
 
   if (!response.ok) {
-    throw new Error(`Comfy submit failed with ${response.status}`);
+    const body = await response.text();
+    throw new Error(`Comfy submit failed with ${response.status}: ${body.slice(0, 500)}`);
   }
 
   const payload = (await response.json()) as { prompt_id?: string };

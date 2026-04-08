@@ -61,6 +61,28 @@ function cleanText(value: string | undefined): string {
   return (value ?? "").trim();
 }
 
+function normalizeModelName(raw: string): string {
+  const text = cleanText(raw);
+  if (!text) {
+    return text;
+  }
+
+  const filenameMatch = text.match(/[A-Za-z0-9._-]+\.safetensors/i);
+  if (filenameMatch) {
+    return filenameMatch[0];
+  }
+
+  const lower = text.toLowerCase();
+  if (lower.includes("dreamora flux local") || lower.includes("flux")) {
+    return process.env.DEFAULT_IMAGE_MODEL ?? "sd_xl_base_1.0.safetensors";
+  }
+  if (lower.includes("dreamora wan") || lower.includes("wan")) {
+    return process.env.DEFAULT_VIDEO_MODEL ?? "wan2.2_ti2v_5B_fp16.safetensors";
+  }
+
+  return text;
+}
+
 function requireFields(values: Array<{ key: string; value: string }>): string | null {
   for (const entry of values) {
     if (!entry.value) {
@@ -386,6 +408,102 @@ app.get("/api/reporting/usage", async () => {
   };
 });
 
+app.get<{
+  Querystring: { mode?: "image" | "video"; query?: string };
+}>("/api/studio/suggestions", async (request) => {
+  const mode = request.query.mode === "video" ? "video" : "image";
+  const query = cleanText(request.query.query).toLowerCase();
+  const terms = query.split(/\s+/).filter(Boolean);
+  const { prompts, runs } = getStore();
+
+  const completedRuns = runs.filter((run) => run.status === "Completed" && run.mode === mode);
+
+  const promptMatches = prompts
+    .map((prompt) => {
+      const haystack = `${prompt.title} ${prompt.summary} ${prompt.tags.join(" ")}`.toLowerCase();
+      const score =
+        terms.length === 0
+          ? 1
+          : terms.reduce((acc, term) => acc + (haystack.includes(term) ? 1 : 0), 0);
+      return { prompt, score };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map((entry) => ({
+      id: entry.prompt.id,
+      title: entry.prompt.title,
+      summary: entry.prompt.summary,
+      tags: entry.prompt.tags,
+      score: entry.score
+    }));
+
+  const modelCounts = new Map<string, number>();
+  const ratioCounts = new Map<string, number>();
+  const qualityCounts = new Map<string, number>();
+  const batchCounts = new Map<number, number>();
+
+  for (const run of completedRuns) {
+    modelCounts.set(run.engine, (modelCounts.get(run.engine) ?? 0) + 1);
+    if (run.aspectRatio) {
+      ratioCounts.set(run.aspectRatio, (ratioCounts.get(run.aspectRatio) ?? 0) + 1);
+    }
+    if (run.quality) {
+      qualityCounts.set(run.quality, (qualityCounts.get(run.quality) ?? 0) + 1);
+    }
+    if (typeof run.batchSize === "number") {
+      batchCounts.set(run.batchSize, (batchCounts.get(run.batchSize) ?? 0) + 1);
+    }
+  }
+
+  const pickMostFrequent = <T>(map: Map<T, number>, fallback: T): T =>
+    [...map.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? fallback;
+
+  const topRuns = completedRuns.slice(0, 5).map((run) => ({
+    id: run.id,
+    title: run.title,
+    engine: run.engine,
+    mode: run.mode,
+    status: run.status,
+    duration: run.duration,
+    output: run.output,
+    tokensUsed: run.tokensUsed,
+    aspectRatio: run.aspectRatio ?? null,
+    quality: run.quality ?? null,
+    batchSize: typeof run.batchSize === "number" ? run.batchSize : null,
+    promptExcerpt: run.promptExcerpt ?? null
+  }));
+
+  const averageTokens =
+    completedRuns.length > 0
+      ? Math.round(
+          completedRuns.reduce((sum, run) => sum + run.tokensUsed, 0) /
+            completedRuns.length
+        )
+      : 0;
+
+  return {
+    mode,
+    memory: {
+      promptMatches,
+      topRuns
+    },
+    recommendations: {
+      model:
+        pickMostFrequent(
+          modelCounts,
+          mode === "image"
+            ? (process.env.DEFAULT_IMAGE_MODEL ?? "sd_xl_base_1.0.safetensors")
+            : (process.env.DEFAULT_VIDEO_MODEL ?? "wan2.2_ti2v_5B_fp16.safetensors")
+        ),
+      aspectRatio: pickMostFrequent(ratioCounts, mode === "image" ? "1:1" : "16:9"),
+      quality: pickMostFrequent(qualityCounts, "High"),
+      batchSize: pickMostFrequent(batchCounts, 1),
+      averageTokens
+    }
+  };
+});
+
 app.post<{
   Body: {
     mode: "image" | "video";
@@ -399,13 +517,14 @@ app.post<{
   const mode = request.body.mode;
   const prompt = cleanText(request.body.prompt);
   const model = cleanText(request.body.model);
+  const normalizedModel = normalizeModelName(model);
   const aspectRatio = cleanText(request.body.aspectRatio);
   const quality = request.body.quality;
   const batchSize = request.body.batchSize ?? 1;
 
   const error = requireFields([
     { key: "prompt", value: prompt },
-    { key: "model", value: model },
+    { key: "model", value: normalizedModel },
     { key: "aspectRatio", value: aspectRatio },
     { key: "quality", value: quality }
   ]);
@@ -425,14 +544,18 @@ app.post<{
     status: "Queued",
     duration: "Pending",
     output: mode === "image" ? `${batchSize} image(s)` : `${aspectRatio} clip`,
-    tokensUsed: mode === "image" ? 3500 * Math.max(1, batchSize) : 8200
+    tokensUsed: mode === "image" ? 3500 * Math.max(1, batchSize) : 8200,
+    promptExcerpt: prompt.slice(0, 280),
+    aspectRatio,
+    quality,
+    batchSize: mode === "image" ? Math.max(1, batchSize) : 1
   });
 
   const job = await createComfyOrSimulatedJob(run.id, {
     mode,
-    prompt,
-    model,
-    aspectRatio,
+      prompt,
+      model: normalizedModel,
+      aspectRatio,
     quality,
     batchSize
   });
@@ -445,6 +568,7 @@ app.post<{
         await updateRunFields(run.id, {
           status: "Completed",
           duration: mode === "image" ? "0m 58s" : "2m 12s",
+          backend: "comfy",
           output:
             mode === "image"
               ? `${Math.max(1, outputCount)} image(s)`
@@ -455,6 +579,7 @@ app.post<{
         await updateRunFields(run.id, {
           status: "Failed",
           duration: "Failed",
+          backend: "comfy",
           output: reason
         });
       }
@@ -470,6 +595,7 @@ app.post<{
         await updateRunFields(run.id, {
           status: "Completed",
           duration: mode === "image" ? "0m 52s" : "1m 46s",
+          backend: "simulated",
           output: mode === "image" ? `${batchSize} image(s)` : `${aspectRatio} clip`
         });
       }
