@@ -192,7 +192,9 @@ export function StudioWorkbench({
       } else if (started.backend === "simulated") {
         setRuntimeNotice("ComfyUI not enabled; using simulated backend.");
       } else {
-        setRuntimeNotice("ComfyUI backend active.");
+        setRuntimeNotice(
+          `ComfyUI backend active (${started.workflowPath ?? "workflow path unknown"}).`
+        );
       }
 
       await pollGeneration(started.jobId, started.runId);

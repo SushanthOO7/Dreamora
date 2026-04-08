@@ -467,7 +467,8 @@ app.post<{
     runId: run.id,
     status: job.status,
     backend: job.backend,
-    fallbackReason: job.error ?? null
+    fallbackReason: job.error ?? null,
+    workflowPath: job.workflowPath ?? null
   };
 });
 
@@ -488,7 +489,8 @@ app.get<{
     status: job.status,
     backend: job.backend,
     error: job.error ?? null,
-    outputSummary: job.outputSummary ?? null
+    outputSummary: job.outputSummary ?? null,
+    workflowPath: job.workflowPath ?? null
   };
 });
 

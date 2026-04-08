@@ -112,6 +112,7 @@ export type StartGenerationResponse = {
   status: "queued" | "running" | "completed" | "failed";
   backend: "comfy" | "simulated";
   fallbackReason: string | null;
+  workflowPath: string | null;
 };
 
 export type GenerationStatusResponse = {
@@ -121,6 +122,7 @@ export type GenerationStatusResponse = {
   backend: "comfy" | "simulated";
   error: string | null;
   outputSummary: string | null;
+  workflowPath: string | null;
 };
 
 export async function startGeneration(

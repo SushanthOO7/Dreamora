@@ -51,12 +51,15 @@ Create `apps/api/.env` (or export env vars in your server shell):
 COMFY_ENABLED=1
 COMFYUI_URL=http://127.0.0.1:8188
 COMFY_WORKFLOW_PATH=workflows/comfy-template.json
+COMFY_IMAGE_WORKFLOW_PATH=workflows/comfy-template.json
+COMFY_VIDEO_WORKFLOW_PATH=workflows/comfy-video-template.json
 ```
 
 Behavior:
 
 - If `COMFY_ENABLED=1` and submission works, jobs run through ComfyUI
 - If Comfy submission fails (or Comfy is disabled), backend falls back to simulated execution and reports the fallback reason in Studio
+- If image/video-specific workflow paths are present, they are used per mode; otherwise it falls back to `COMFY_WORKFLOW_PATH`
 
 ### Workflow template tokens
 
@@ -71,3 +74,10 @@ When `COMFY_WORKFLOW_PATH` points to a JSON workflow, the backend replaces:
 - `__RUN_ID__`
 
 Use these placeholders inside your Comfy workflow JSON where relevant.
+
+### Image vs video workflow files
+
+- `apps/api/workflows/comfy-template.json`: ready image template (SDXL graph)
+- `apps/api/workflows/comfy-video-template.json`: placeholder for your actual video graph
+
+To run real video generation through Comfy, replace `comfy-video-template.json` with your working video API graph.

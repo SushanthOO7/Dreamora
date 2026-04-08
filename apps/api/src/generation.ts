@@ -25,6 +25,7 @@ export type GenerationJob = {
   error?: string;
   promptId?: string;
   outputSummary?: string;
+  workflowPath?: string;
 };
 
 type ComfyHistoryResult = {
@@ -35,6 +36,7 @@ type ComfyHistoryResult = {
 
 const jobs = new Map<string, GenerationJob>();
 const pollers = new Map<string, NodeJS.Timeout>();
+const MAX_JOB_CACHE = 500;
 
 function ratioToResolution(ratio: string, mode: "image" | "video"): { width: number; height: number } {
   const presetsImage: Record<string, { width: number; height: number }> = {
@@ -64,8 +66,11 @@ function qualityToSteps(quality: "Standard" | "High" | "Ultra"): number {
   return 20;
 }
 
-function resolveWorkflowPath(): string | null {
-  const configured = process.env.COMFY_WORKFLOW_PATH;
+function resolveWorkflowPath(mode: "image" | "video"): string | null {
+  const configured =
+    mode === "image"
+      ? process.env.COMFY_IMAGE_WORKFLOW_PATH ?? process.env.COMFY_WORKFLOW_PATH
+      : process.env.COMFY_VIDEO_WORKFLOW_PATH ?? process.env.COMFY_WORKFLOW_PATH;
   if (!configured) {
     return null;
   }
@@ -103,12 +108,16 @@ function applyWorkflowTokens(
 async function submitToComfy(
   request: GenerationRequest,
   runId: string
-): Promise<{ promptId: string }> {
+): Promise<{ promptId: string; workflowPath: string }> {
   const comfyUrl = process.env.COMFYUI_URL ?? "http://127.0.0.1:8188";
-  const workflowPath = resolveWorkflowPath();
+  const workflowPath = resolveWorkflowPath(request.mode);
 
   if (!workflowPath) {
-    throw new Error("COMFY_WORKFLOW_PATH is not configured");
+    throw new Error(
+      request.mode === "image"
+        ? "COMFY_IMAGE_WORKFLOW_PATH (or COMFY_WORKFLOW_PATH) is not configured"
+        : "COMFY_VIDEO_WORKFLOW_PATH (or COMFY_WORKFLOW_PATH) is not configured"
+    );
   }
 
   const rawWorkflow = await readFile(workflowPath, "utf8");
@@ -133,7 +142,7 @@ async function submitToComfy(
     throw new Error("Comfy response missing prompt_id");
   }
 
-  return { promptId: payload.prompt_id };
+  return { promptId: payload.prompt_id, workflowPath };
 }
 
 async function fetchComfyHistory(promptId: string): Promise<ComfyHistoryResult> {
@@ -198,6 +207,22 @@ export function getGenerationJob(jobId: string): GenerationJob | null {
   return jobs.get(jobId) ?? null;
 }
 
+function pruneJobs(): void {
+  if (jobs.size <= MAX_JOB_CACHE) {
+    return;
+  }
+
+  const ordered = [...jobs.values()].sort((a, b) => b.createdAt - a.createdAt);
+  const keepIds = new Set(ordered.slice(0, MAX_JOB_CACHE).map((item) => item.id));
+
+  for (const jobId of jobs.keys()) {
+    if (!keepIds.has(jobId)) {
+      clearJobPoller(jobId);
+      jobs.delete(jobId);
+    }
+  }
+}
+
 export function createSimulatedJob(runId: string, request: GenerationRequest): GenerationJob {
   const job: GenerationJob = {
     id: crypto.randomUUID(),
@@ -208,6 +233,7 @@ export function createSimulatedJob(runId: string, request: GenerationRequest): G
     createdAt: Date.now()
   };
   jobs.set(job.id, job);
+  pruneJobs();
   return job;
 }
 
@@ -227,6 +253,7 @@ export async function createComfyOrSimulatedJob(
     createdAt: Date.now()
   };
   jobs.set(jobId, initial);
+  pruneJobs();
 
   if (!comfyEnabled) {
     return initial;
@@ -238,9 +265,11 @@ export async function createComfyOrSimulatedJob(
       ...initial,
       status: "running",
       promptId: submission.promptId,
+      workflowPath: submission.workflowPath,
       startedAt: Date.now()
     };
     jobs.set(jobId, running);
+    pruneJobs();
     return running;
   } catch (error) {
     const fallback: GenerationJob = {
@@ -250,6 +279,7 @@ export async function createComfyOrSimulatedJob(
       error: (error as Error).message
     };
     jobs.set(jobId, fallback);
+    pruneJobs();
     return fallback;
   }
 }
@@ -285,6 +315,7 @@ export function startComfyPolling(
           error: result.error ?? "Generation failed"
         };
         jobs.set(job.id, failed);
+        pruneJobs();
         clearJobPoller(job.id);
         await onFailed(failed.error ?? "Generation failed");
         return;
@@ -297,6 +328,7 @@ export function startComfyPolling(
         outputSummary: `${result.outputCount ?? 0} artifact(s)`
       };
       jobs.set(job.id, done);
+      pruneJobs();
       clearJobPoller(job.id);
       await onCompleted(result.outputCount ?? 0);
     } catch (error) {
@@ -307,6 +339,7 @@ export function startComfyPolling(
         error: (error as Error).message
       };
       jobs.set(job.id, failed);
+      pruneJobs();
       clearJobPoller(job.id);
       await onFailed(failed.error ?? "Generation failed");
     }
@@ -325,6 +358,7 @@ export function startSimulatedProgress(
     status: "running",
     startedAt: Date.now()
   });
+  pruneJobs();
 
   void onRunning();
 
@@ -340,6 +374,7 @@ export function startSimulatedProgress(
       completedAt: Date.now(),
       outputSummary: current.mode === "image" ? "simulated image set" : "simulated video clip"
     });
+    pruneJobs();
     await onCompleted();
   }, 5500);
 
