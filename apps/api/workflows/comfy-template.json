@@ -1,0 +1,12 @@
+{
+  "note": "Replace this file with a valid ComfyUI workflow graph. Placeholder tokens are replaced by the API before submission.",
+  "tokens": {
+    "prompt": "__PROMPT__",
+    "model": "__MODEL__",
+    "width": "__WIDTH__",
+    "height": "__HEIGHT__",
+    "steps": "__STEPS__",
+    "batch": "__BATCH__",
+    "run_id": "__RUN_ID__"
+  }
+}

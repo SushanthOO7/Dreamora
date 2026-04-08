@@ -2,6 +2,12 @@ import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { dashboardResponse, modelRecommendations, orchestrationStrategy } from "@dreamora/shared";
 import {
+  createComfyOrSimulatedJob,
+  getGenerationJob,
+  startComfyPolling,
+  startSimulatedProgress
+} from "./generation.js";
+import {
   createProject,
   createPrompt,
   createProvider,
@@ -9,6 +15,7 @@ import {
   getStore,
   initStore,
   updateProviderCredentials,
+  updateRunFields,
   updateRunStatus
 } from "./store.js";
 
@@ -362,6 +369,126 @@ app.get("/api/reporting/usage", async () => {
     ],
     breakdown,
     weekly
+  };
+});
+
+app.post<{
+  Body: {
+    mode: "image" | "video";
+    prompt: string;
+    model: string;
+    aspectRatio: string;
+    quality: "Standard" | "High" | "Ultra";
+    batchSize?: number;
+  };
+}>("/api/generation/start", async (request, reply) => {
+  const mode = request.body.mode;
+  const prompt = cleanText(request.body.prompt);
+  const model = cleanText(request.body.model);
+  const aspectRatio = cleanText(request.body.aspectRatio);
+  const quality = request.body.quality;
+  const batchSize = request.body.batchSize ?? 1;
+
+  const error = requireFields([
+    { key: "prompt", value: prompt },
+    { key: "model", value: model },
+    { key: "aspectRatio", value: aspectRatio },
+    { key: "quality", value: quality }
+  ]);
+
+  if (error) {
+    reply.code(400);
+    return { error };
+  }
+
+  const run = await createRun({
+    title:
+      mode === "image"
+        ? `Image generation ${new Date().toLocaleTimeString()}`
+        : `Video generation ${new Date().toLocaleTimeString()}`,
+    engine: model,
+    mode,
+    status: "Queued",
+    duration: "Pending",
+    output: mode === "image" ? `${batchSize} image(s)` : `${aspectRatio} clip`,
+    tokensUsed: mode === "image" ? 3500 * Math.max(1, batchSize) : 8200
+  });
+
+  const job = await createComfyOrSimulatedJob(run.id, {
+    mode,
+    prompt,
+    model,
+    aspectRatio,
+    quality,
+    batchSize
+  });
+
+  if (job.backend === "comfy" && job.status === "running") {
+    await updateRunStatus(run.id, "Running");
+    startComfyPolling(
+      job,
+      async (outputCount) => {
+        await updateRunFields(run.id, {
+          status: "Completed",
+          duration: mode === "image" ? "0m 58s" : "2m 12s",
+          output:
+            mode === "image"
+              ? `${Math.max(1, outputCount)} image(s)`
+              : `${Math.max(1, outputCount)} clip artifact(s)`
+        });
+      },
+      async (reason) => {
+        await updateRunFields(run.id, {
+          status: "Failed",
+          duration: "Failed",
+          output: reason
+        });
+      }
+    );
+  } else {
+    await updateRunStatus(run.id, "Running");
+    startSimulatedProgress(
+      job,
+      async () => {
+        await updateRunStatus(run.id, "Running");
+      },
+      async () => {
+        await updateRunFields(run.id, {
+          status: "Completed",
+          duration: mode === "image" ? "0m 52s" : "1m 46s",
+          output: mode === "image" ? `${batchSize} image(s)` : `${aspectRatio} clip`
+        });
+      }
+    );
+  }
+
+  return {
+    jobId: job.id,
+    runId: run.id,
+    status: job.status,
+    backend: job.backend,
+    fallbackReason: job.error ?? null
+  };
+});
+
+app.get<{
+  Params: { id: string };
+}>("/api/generation/:id", async (request, reply) => {
+  const job = getGenerationJob(request.params.id);
+  if (!job) {
+    reply.code(404);
+    return {
+      error: "Job not found"
+    };
+  }
+
+  return {
+    id: job.id,
+    runId: job.runId,
+    status: job.status,
+    backend: job.backend,
+    error: job.error ?? null,
+    outputSummary: job.outputSummary ?? null
   };
 });
 

@@ -97,6 +97,52 @@ export async function updateRunStatus(
   });
 }
 
+export type StartGenerationRequest = {
+  mode: "image" | "video";
+  prompt: string;
+  model: string;
+  aspectRatio: string;
+  quality: "Standard" | "High" | "Ultra";
+  batchSize?: number;
+};
+
+export type StartGenerationResponse = {
+  jobId: string;
+  runId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  backend: "comfy" | "simulated";
+  fallbackReason: string | null;
+};
+
+export type GenerationStatusResponse = {
+  id: string;
+  runId: string;
+  status: "queued" | "running" | "completed" | "failed";
+  backend: "comfy" | "simulated";
+  error: string | null;
+  outputSummary: string | null;
+};
+
+export async function startGeneration(
+  input: StartGenerationRequest
+): Promise<StartGenerationResponse> {
+  return postJson<StartGenerationResponse>("/api/generation/start", input);
+}
+
+export async function getGenerationStatus(
+  jobId: string
+): Promise<GenerationStatusResponse> {
+  const response = await fetch(`${API_URL}/api/generation/${jobId}`, {
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    throw new Error(`Request failed: /api/generation/${jobId}`);
+  }
+
+  return response.json() as Promise<GenerationStatusResponse>;
+}
+
 export type StudioModelGroups = {
   imageModels: string[];
   videoModels: string[];

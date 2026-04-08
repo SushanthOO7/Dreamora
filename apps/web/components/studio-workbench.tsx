@@ -3,11 +3,15 @@
 import type { PromptPreset, ProviderConfig, RunSummary } from "@dreamora/shared";
 import { AnimatePresence, motion } from "framer-motion";
 import { useMemo, useState } from "react";
-import { createRun, deriveModelsFromProviders, updateRunStatus } from "../lib/client-api";
+import {
+  deriveModelsFromProviders,
+  getGenerationStatus,
+  startGeneration
+} from "../lib/client-api";
 
 const imageRatios = ["1:1", "4:5", "3:4", "16:9", "9:16"];
 const videoRatios = ["16:9", "9:16"];
-const qualityOptions = ["Standard", "High", "Ultra"];
+const qualityOptions = ["Standard", "High", "Ultra"] as const;
 const batchOptions = ["1", "2", "4", "8"];
 
 const workflowStages = [
@@ -48,10 +52,11 @@ export function StudioWorkbench({
 }: StudioWorkbenchProps) {
   const [mode, setMode] = useState<"image" | "video">("image");
   const [ratio, setRatio] = useState("16:9");
-  const [quality, setQuality] = useState("High");
+  const [quality, setQuality] = useState<(typeof qualityOptions)[number]>("High");
   const [batch, setBatch] = useState("4");
   const [running, setRunning] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const [runtimeNotice, setRuntimeNotice] = useState("");
   const [runs, setRuns] = useState<RunSummary[]>(initialRuns);
   const [promptText, setPromptText] = useState(defaultPrompt("image"));
 
@@ -89,9 +94,68 @@ export function StudioWorkbench({
     }
   }
 
+  async function pollGeneration(jobId: string, runId: string) {
+    let attempts = 0;
+    const maxAttempts = 120;
+
+    while (attempts < maxAttempts) {
+      attempts += 1;
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, 2500);
+      });
+
+      try {
+        const status = await getGenerationStatus(jobId);
+
+        if (status.status === "completed") {
+          setRuns((current) =>
+            current.map((run) =>
+              run.id === runId
+                ? {
+                    ...run,
+                    status: "Completed",
+                    duration: run.mode === "image" ? "0m 58s" : "2m 12s",
+                    output: status.outputSummary ?? run.output
+                  }
+                : run
+            )
+          );
+          setRunning(false);
+          return;
+        }
+
+        if (status.status === "failed") {
+          setRuns((current) =>
+            current.map((run) =>
+              run.id === runId
+                ? {
+                    ...run,
+                    status: "Failed",
+                    duration: "Failed",
+                    output: status.error ?? "Generation failed"
+                  }
+                : run
+            )
+          );
+          setSubmitError(status.error ?? "Generation failed.");
+          setRunning(false);
+          return;
+        }
+      } catch {
+        setSubmitError("Could not poll generation status.");
+        setRunning(false);
+        return;
+      }
+    }
+
+    setSubmitError("Generation timeout reached while polling.");
+    setRunning(false);
+  }
+
   async function handleGenerate() {
     setRunning(true);
     setSubmitError("");
+    setRuntimeNotice("");
 
     const now = new Date();
     const runTitle =
@@ -100,44 +164,40 @@ export function StudioWorkbench({
         : `Video generation ${now.toLocaleTimeString()}`;
 
     try {
-      const createdRun = await createRun({
+      const started = await startGeneration({
+        mode,
+        prompt: promptText,
+        model: selectedModel,
+        aspectRatio: ratio,
+        quality,
+        batchSize: mode === "image" ? Number(batch) : 1
+      });
+
+      const provisionalRun: RunSummary = {
+        id: started.runId,
         title: runTitle,
         engine: selectedModel,
-        mode,
         status: "Running",
         duration: "Pending",
         output: mode === "image" ? `${batch} image(s)` : `${ratio} clip`,
-        tokensUsed: mode === "image" ? 3500 * Number(batch) : 8200
-      });
+        mode
+      };
 
-      setRuns((current) => [createdRun, ...current].slice(0, 10));
+      setRuns((current) => [provisionalRun, ...current].slice(0, 10));
 
-      window.setTimeout(async () => {
-        try {
-          const completed = await updateRunStatus(
-            createdRun.id!,
-            "Completed",
-            mode === "image" ? "0m 42s" : "1m 38s"
-          );
-          setRuns((current) =>
-            current.map((run) =>
-              run.id === completed.id
-                ? {
-                    ...run,
-                    status: completed.status,
-                    duration: completed.duration
-                  }
-                : run
-            )
-          );
-        } catch {
-          setSubmitError("Run saved but status update failed.");
-        } finally {
-          setRunning(false);
-        }
-      }, 5200);
+      if (started.backend === "simulated" && started.fallbackReason) {
+        setRuntimeNotice(
+          `ComfyUI fallback active: ${started.fallbackReason}`
+        );
+      } else if (started.backend === "simulated") {
+        setRuntimeNotice("ComfyUI not enabled; using simulated backend.");
+      } else {
+        setRuntimeNotice("ComfyUI backend active.");
+      }
+
+      await pollGeneration(started.jobId, started.runId);
     } catch {
-      setSubmitError("Could not create run. Check API server.");
+      setSubmitError("Could not start generation. Check API server.");
       setRunning(false);
     }
   }
@@ -189,7 +249,9 @@ export function StudioWorkbench({
 
           <select
             value={quality}
-            onChange={(event) => setQuality(event.target.value)}
+            onChange={(event) =>
+              setQuality(event.target.value as (typeof qualityOptions)[number])
+            }
             className="rounded-[18px] border border-white/8 bg-white/5 px-4 py-3 text-sm outline-none"
           >
             {qualityOptions.map((item) => (
@@ -214,13 +276,16 @@ export function StudioWorkbench({
 
           <button
             onClick={handleGenerate}
-            disabled={running || !selectedModel}
+            disabled={running || !selectedModel || !promptText.trim()}
             className="ml-auto rounded-[20px] bg-[#d7ff1f] px-6 py-3 text-sm font-semibold text-black transition hover:brightness-95 disabled:opacity-65"
           >
             {running ? "Generating..." : "Generate"}
           </button>
         </div>
-        {submitError ? <p className="mt-3 text-sm text-red-600">{submitError}</p> : null}
+        {runtimeNotice ? (
+          <p className="mt-3 text-sm text-black/70">{runtimeNotice}</p>
+        ) : null}
+        {submitError ? <p className="mt-2 text-sm text-red-600">{submitError}</p> : null}
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
@@ -261,7 +326,7 @@ export function StudioWorkbench({
               <InfoCard label="Aspect ratio" value={ratio} />
               <InfoCard
                 label="Quality / Batch"
-                value={`${quality} · ${mode === "image" ? batch : "n/a"}`}
+                value={`${quality} - ${mode === "image" ? batch : "n/a"}`}
               />
             </div>
 
@@ -360,7 +425,7 @@ export function StudioWorkbench({
                         <div>
                           <p className="font-medium">{run.title}</p>
                           <p className="text-sm text-black/45">
-                            {run.status} · {run.duration}
+                            {run.status} - {run.duration}
                           </p>
                         </div>
                         <span className="rounded-full bg-[#edf7ef] px-2 py-1 text-xs text-[#23945d]">

@@ -289,3 +289,35 @@ export async function updateRunStatus(
   await persist();
   return run;
 }
+
+export async function updateRunFields(
+  id: string,
+  fields: Partial<Pick<StoredRun, "status" | "duration" | "output" | "tokensUsed">>
+): Promise<StoredRun> {
+  const store = getStore();
+  const run = store.runs.find((item) => item.id === id);
+
+  if (!run) {
+    throw new Error("Run not found");
+  }
+
+  if (typeof fields.status === "string") {
+    run.status = fields.status;
+  }
+
+  if (typeof fields.duration === "string") {
+    run.duration = fields.duration;
+  }
+
+  if (typeof fields.output === "string") {
+    run.output = fields.output;
+  }
+
+  if (typeof fields.tokensUsed === "number") {
+    run.tokensUsed = fields.tokensUsed;
+  }
+
+  run.updatedAt = nowIso();
+  await persist();
+  return run;
+}

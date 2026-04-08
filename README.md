@@ -34,3 +34,40 @@ npm run dev
 Web: `http://localhost:3000`
 
 API: `http://localhost:8787`
+
+## Stage 4 Generation Orchestration
+
+Stage 4 is implemented with backend job orchestration:
+
+- `POST /api/generation/start` creates a persistent run and starts a generation job
+- `GET /api/generation/:id` returns live job status for polling
+- Studio now calls these endpoints directly and updates run status based on backend state
+
+### ComfyUI mode (real execution)
+
+Create `apps/api/.env` (or export env vars in your server shell):
+
+```bash
+COMFY_ENABLED=1
+COMFYUI_URL=http://127.0.0.1:8188
+COMFY_WORKFLOW_PATH=workflows/comfy-template.json
+```
+
+Behavior:
+
+- If `COMFY_ENABLED=1` and submission works, jobs run through ComfyUI
+- If Comfy submission fails (or Comfy is disabled), backend falls back to simulated execution and reports the fallback reason in Studio
+
+### Workflow template tokens
+
+When `COMFY_WORKFLOW_PATH` points to a JSON workflow, the backend replaces:
+
+- `__PROMPT__`
+- `__MODEL__`
+- `__WIDTH__`
+- `__HEIGHT__`
+- `__STEPS__`
+- `__BATCH__`
+- `__RUN_ID__`
+
+Use these placeholders inside your Comfy workflow JSON where relevant.
