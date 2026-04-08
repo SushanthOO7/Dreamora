@@ -1,7 +1,9 @@
-import { providerConfigs } from "@dreamora/shared";
 import { WorkspaceShell } from "../../components/workspace-shell";
+import { getProviders } from "../../lib/api";
 
-export default function ProvidersPage() {
+export default async function ProvidersPage() {
+  const providerConfigs = await getProviders();
+
   return (
     <WorkspaceShell
       title="Providers"

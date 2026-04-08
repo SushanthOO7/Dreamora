@@ -1,8 +1,10 @@
-import { projectSummaries } from "@dreamora/shared";
 import { CardGrid } from "../../components/workspace-cards";
 import { WorkspaceShell } from "../../components/workspace-shell";
+import { getProjects } from "../../lib/api";
 
-export default function ProjectsPage() {
+export default async function ProjectsPage() {
+  const projectSummaries = await getProjects();
+
   return (
     <WorkspaceShell
       title="Projects"

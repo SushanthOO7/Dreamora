@@ -1,8 +1,10 @@
-import { promptPresets } from "@dreamora/shared";
 import { CardGrid } from "../../components/workspace-cards";
 import { WorkspaceShell } from "../../components/workspace-shell";
+import { getPrompts } from "../../lib/api";
 
-export default function PromptsPage() {
+export default async function PromptsPage() {
+  const promptPresets = await getPrompts();
+
   return (
     <WorkspaceShell
       title="Prompt Library"

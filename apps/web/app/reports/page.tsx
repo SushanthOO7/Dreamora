@@ -1,7 +1,9 @@
-import { modelUsageBreakdown, usageMetrics, weeklyUsageSeries } from "@dreamora/shared";
 import { WorkspaceShell } from "../../components/workspace-shell";
+import { getUsageReporting } from "../../lib/api";
 
-export default function ReportsPage() {
+export default async function ReportsPage() {
+  const { metrics: usageMetrics, breakdown: modelUsageBreakdown, weekly: weeklyUsageSeries } =
+    await getUsageReporting();
   const total = modelUsageBreakdown.reduce((sum, item) => sum + item.value, 0);
 
   return (
@@ -70,13 +72,13 @@ export default function ReportsPage() {
                 background: `conic-gradient(${modelUsageBreakdown
                   .map((item, index, arr) => {
                     const start =
-                      arr
-                        .slice(0, index)
-                        .reduce((sum, part) => sum + part.value, 0) / total * 360;
+                      (arr.slice(0, index).reduce((sum, part) => sum + part.value, 0) /
+                        Math.max(1, total)) *
+                      360;
                     const end =
-                      arr
-                        .slice(0, index + 1)
-                        .reduce((sum, part) => sum + part.value, 0) / total * 360;
+                      (arr.slice(0, index + 1).reduce((sum, part) => sum + part.value, 0) /
+                        Math.max(1, total)) *
+                      360;
                     return `${item.color} ${start}deg ${end}deg`;
                   })
                   .join(", ")})`

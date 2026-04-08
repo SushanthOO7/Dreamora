@@ -1,8 +1,10 @@
-import { runSummaries } from "@dreamora/shared";
 import { DataTable } from "../../components/workspace-cards";
 import { WorkspaceShell } from "../../components/workspace-shell";
+import { getRuns } from "../../lib/api";
 
-export default function RunsPage() {
+export default async function RunsPage() {
+  const runSummaries = await getRuns();
+
   return (
     <WorkspaceShell
       title="Runs"

@@ -1,6 +1,9 @@
 import type {
   DashboardResponse,
   ModelRecommendation,
+  ProjectSummary,
+  PromptPreset,
+  RunSummary,
   ProviderConfig,
   UsageMetric,
   UsageSeries
@@ -9,7 +12,10 @@ import {
   dashboardResponse,
   modelRecommendations,
   modelUsageBreakdown,
+  projectSummaries,
+  promptPresets,
   providerConfigs,
+  runSummaries,
   usageMetrics,
   weeklyUsageSeries
 } from "@dreamora/shared";
@@ -49,7 +55,9 @@ export function getRecommendations(): Promise<ModelRecommendation[]> {
 }
 
 export function getProviders(): Promise<ProviderConfig[]> {
-  return getJson<ProviderConfig[]>("/api/providers");
+  return getJson<ProviderConfig[]>("/api/providers").catch(
+    () => providerConfigs
+  );
 }
 
 export function getUsageReporting(): Promise<{
@@ -66,4 +74,16 @@ export function getUsageReporting(): Promise<{
     breakdown: modelUsageBreakdown,
     weekly: weeklyUsageSeries
   }));
+}
+
+export function getProjects(): Promise<ProjectSummary[]> {
+  return getJson<ProjectSummary[]>("/api/projects").catch(() => projectSummaries);
+}
+
+export function getPrompts(): Promise<PromptPreset[]> {
+  return getJson<PromptPreset[]>("/api/prompts").catch(() => promptPresets);
+}
+
+export function getRuns(): Promise<RunSummary[]> {
+  return getJson<RunSummary[]>("/api/runs").catch(() => runSummaries);
 }
