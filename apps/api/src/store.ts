@@ -268,3 +268,24 @@ export async function updateProviderCredentials(
   await persist();
   return provider;
 }
+
+export async function updateRunStatus(
+  id: string,
+  status: string,
+  duration?: string
+): Promise<StoredRun> {
+  const store = getStore();
+  const run = store.runs.find((item) => item.id === id);
+
+  if (!run) {
+    throw new Error("Run not found");
+  }
+
+  run.status = status;
+  if (duration) {
+    run.duration = duration;
+  }
+  run.updatedAt = nowIso();
+  await persist();
+  return run;
+}

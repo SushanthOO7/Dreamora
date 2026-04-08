@@ -1,4 +1,5 @@
 import { CardGrid } from "../../components/workspace-cards";
+import { CreateProjectForm } from "../../components/stage3-actions";
 import { WorkspaceShell } from "../../components/workspace-shell";
 import { getProjects } from "../../lib/api";
 
@@ -10,6 +11,7 @@ export default async function ProjectsPage() {
       title="Projects"
       description="Organize generation work by campaign, concept, or client so prompts, references, and outputs stay connected."
     >
+      <CreateProjectForm />
       <CardGrid
         items={projectSummaries.map((project) => ({
           title: project.name,

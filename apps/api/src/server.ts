@@ -8,7 +8,8 @@ import {
   createRun,
   getStore,
   initStore,
-  updateProviderCredentials
+  updateProviderCredentials,
+  updateRunStatus
 } from "./store.js";
 
 const app = Fastify({
@@ -48,6 +49,20 @@ function toProviderStatus(secretConfigured: boolean, existingStatus: string): st
   return "Needs key";
 }
 
+function cleanText(value: string | undefined): string {
+  return (value ?? "").trim();
+}
+
+function requireFields(values: Array<{ key: string; value: string }>): string | null {
+  for (const entry of values) {
+    if (!entry.value) {
+      return `${entry.key} is required`;
+    }
+  }
+
+  return null;
+}
+
 app.get("/health", async () => ({
   ok: true
 }));
@@ -76,7 +91,26 @@ app.post<{
     summary: string;
   };
 }>("/api/projects", async (request, reply) => {
-  const project = await createProject(request.body);
+  const payload = {
+    name: cleanText(request.body.name),
+    format: cleanText(request.body.format),
+    status: cleanText(request.body.status),
+    summary: cleanText(request.body.summary)
+  };
+
+  const error = requireFields([
+    { key: "name", value: payload.name },
+    { key: "format", value: payload.format },
+    { key: "status", value: payload.status },
+    { key: "summary", value: payload.summary }
+  ]);
+
+  if (error) {
+    reply.code(400);
+    return { error };
+  }
+
+  const project = await createProject(payload);
   reply.code(201);
   return project;
 });
@@ -95,7 +129,27 @@ app.post<{
     tags: string[];
   };
 }>("/api/prompts", async (request, reply) => {
-  const prompt = await createPrompt(request.body);
+  const payload = {
+    title: cleanText(request.body.title),
+    engine: cleanText(request.body.engine),
+    type: cleanText(request.body.type),
+    summary: cleanText(request.body.summary),
+    tags: request.body.tags ?? []
+  };
+
+  const error = requireFields([
+    { key: "title", value: payload.title },
+    { key: "engine", value: payload.engine },
+    { key: "type", value: payload.type },
+    { key: "summary", value: payload.summary }
+  ]);
+
+  if (error) {
+    reply.code(400);
+    return { error };
+  }
+
+  const prompt = await createPrompt(payload);
   reply.code(201);
   return prompt;
 });
@@ -116,13 +170,60 @@ app.post<{
     tokensUsed?: number;
   };
 }>("/api/runs", async (request, reply) => {
-  const run = await createRun({
+  const payload = {
     ...request.body,
+    title: cleanText(request.body.title),
+    engine: cleanText(request.body.engine),
+    status: cleanText(request.body.status),
+    duration: cleanText(request.body.duration),
+    output: cleanText(request.body.output)
+  };
+
+  const error = requireFields([
+    { key: "title", value: payload.title },
+    { key: "engine", value: payload.engine },
+    { key: "status", value: payload.status },
+    { key: "duration", value: payload.duration },
+    { key: "output", value: payload.output }
+  ]);
+
+  if (error) {
+    reply.code(400);
+    return { error };
+  }
+
+  const run = await createRun({
+    ...payload,
     tokensUsed: request.body.tokensUsed ?? 0
   });
 
   reply.code(201);
   return run;
+});
+
+app.patch<{
+  Params: { id: string };
+  Body: { status: string; duration?: string };
+}>("/api/runs/:id/status", async (request, reply) => {
+  const status = cleanText(request.body.status);
+  const duration = cleanText(request.body.duration);
+
+  if (!status) {
+    reply.code(400);
+    return { error: "status is required" };
+  }
+
+  try {
+    const run = await updateRunStatus(
+      request.params.id,
+      status,
+      duration || undefined
+    );
+    return run;
+  } catch {
+    reply.code(404);
+    return { error: "Run not found" };
+  }
 });
 
 app.get("/api/providers", async () => {
@@ -149,7 +250,27 @@ app.post<{
     note: string;
   };
 }>("/api/providers", async (request, reply) => {
-  const provider = await createProvider(request.body);
+  const payload = {
+    name: cleanText(request.body.name),
+    category: cleanText(request.body.category),
+    auth: cleanText(request.body.auth),
+    defaultModel: cleanText(request.body.defaultModel),
+    note: cleanText(request.body.note)
+  };
+
+  const error = requireFields([
+    { key: "name", value: payload.name },
+    { key: "category", value: payload.category },
+    { key: "auth", value: payload.auth },
+    { key: "defaultModel", value: payload.defaultModel }
+  ]);
+
+  if (error) {
+    reply.code(400);
+    return { error };
+  }
+
+  const provider = await createProvider(payload);
   reply.code(201);
   return provider;
 });

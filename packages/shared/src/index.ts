@@ -37,6 +37,7 @@ export type ModelRecommendation = {
 };
 
 export type ProjectSummary = {
+  id?: string;
   name: string;
   format: string;
   status: string;
@@ -45,6 +46,7 @@ export type ProjectSummary = {
 };
 
 export type PromptPreset = {
+  id?: string;
   title: string;
   engine: string;
   type: string;
@@ -53,11 +55,14 @@ export type PromptPreset = {
 };
 
 export type RunSummary = {
+  id?: string;
   title: string;
   engine: string;
   status: string;
   duration: string;
   output: string;
+  mode?: "image" | "video";
+  tokensUsed?: number;
 };
 
 export type SettingsGroup = {
@@ -70,12 +75,15 @@ export type SettingsGroup = {
 };
 
 export type ProviderConfig = {
+  id?: string;
   name: string;
   category: string;
   status: string;
   auth: string;
   defaultModel: string;
   note: string;
+  secretConfigured?: boolean;
+  secretHint?: string | null;
 };
 
 export type UsageMetric = {

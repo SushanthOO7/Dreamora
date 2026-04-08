@@ -22,10 +22,17 @@ import {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787";
 
-async function getJson<T>(path: string): Promise<T> {
+async function getJson<T>(
+  path: string,
+  options?: {
+    noStore?: boolean;
+  }
+): Promise<T> {
   try {
     const response = await fetch(`${API_URL}${path}`, {
-      next: { revalidate: 60 }
+      ...(options?.noStore
+        ? { cache: "no-store" as const }
+        : { next: { revalidate: 60 } })
     });
 
     if (!response.ok) {
@@ -55,7 +62,7 @@ export function getRecommendations(): Promise<ModelRecommendation[]> {
 }
 
 export function getProviders(): Promise<ProviderConfig[]> {
-  return getJson<ProviderConfig[]>("/api/providers").catch(
+  return getJson<ProviderConfig[]>("/api/providers", { noStore: true }).catch(
     () => providerConfigs
   );
 }
@@ -69,7 +76,7 @@ export function getUsageReporting(): Promise<{
     metrics: UsageMetric[];
     breakdown: UsageSeries[];
     weekly: UsageSeries[];
-  }>("/api/reporting/usage").catch(() => ({
+  }>("/api/reporting/usage", { noStore: true }).catch(() => ({
     metrics: usageMetrics,
     breakdown: modelUsageBreakdown,
     weekly: weeklyUsageSeries
@@ -77,13 +84,19 @@ export function getUsageReporting(): Promise<{
 }
 
 export function getProjects(): Promise<ProjectSummary[]> {
-  return getJson<ProjectSummary[]>("/api/projects").catch(() => projectSummaries);
+  return getJson<ProjectSummary[]>("/api/projects", { noStore: true }).catch(
+    () => projectSummaries
+  );
 }
 
 export function getPrompts(): Promise<PromptPreset[]> {
-  return getJson<PromptPreset[]>("/api/prompts").catch(() => promptPresets);
+  return getJson<PromptPreset[]>("/api/prompts", { noStore: true }).catch(
+    () => promptPresets
+  );
 }
 
 export function getRuns(): Promise<RunSummary[]> {
-  return getJson<RunSummary[]>("/api/runs").catch(() => runSummaries);
+  return getJson<RunSummary[]>("/api/runs", { noStore: true }).catch(
+    () => runSummaries
+  );
 }

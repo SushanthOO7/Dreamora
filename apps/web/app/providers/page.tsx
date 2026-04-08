@@ -1,3 +1,4 @@
+import { ProviderActions } from "../../components/stage3-actions";
 import { WorkspaceShell } from "../../components/workspace-shell";
 import { getProviders } from "../../lib/api";
 
@@ -59,6 +60,8 @@ export default async function ProvidersPage() {
           </div>
         ))}
       </div>
+
+      <ProviderActions providers={providerConfigs} />
 
       <div className="grid gap-6 xl:grid-cols-2">
         <section className="panel rounded-[32px] p-6">
