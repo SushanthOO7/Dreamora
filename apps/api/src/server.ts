@@ -9,6 +9,8 @@ import {
   startSimulatedProgress
 } from "./generation.js";
 import { createPlan } from "./planner.js";
+import { handleMcpRequest, type McpJsonRpcRequest } from "./mcp.js";
+import { evaluateRegenerationPolicy } from "./policy.js";
 import {
   evaluateRegeneration,
   getRunScore,
@@ -482,42 +484,34 @@ function rebuildSemanticIndex(): void {
   }
 }
 
-app.get<{
-  Querystring: { mode?: "image" | "video"; query?: string };
-}>("/api/studio/suggestions", async (request) => {
-  const mode = request.query.mode === "video" ? "video" : "image";
-  const query = cleanText(request.query.query);
+function getStudioSuggestions(mode: "image" | "video", query: string) {
   const { prompts, runs } = getStore();
+  const cleanQuery = cleanText(query);
 
   rebuildSemanticIndex();
   const index = getSemanticIndex();
-
   const completedRuns = runs.filter((run) => run.status === "Completed" && run.mode === mode);
 
-  let promptMatches: Array<{ id: string; title: string; summary: string; tags: string[]; score: number }>;
-
-  if (query.length > 0) {
-    const semanticResults = index.search(query, 5, "prompt");
-    promptMatches = semanticResults.map((result) => ({
-      id: result.id,
-      title: (result.meta.title as string) ?? "",
-      summary: (result.meta.summary as string) ?? "",
-      tags: (result.meta.tags as string[]) ?? [],
-      score: result.score
-    }));
-  } else {
-    promptMatches = prompts.slice(0, 5).map((p) => ({
-      id: p.id,
-      title: p.title,
-      summary: p.summary,
-      tags: p.tags,
-      score: 1
-    }));
-  }
+  const promptMatches =
+    cleanQuery.length > 0
+      ? index.search(cleanQuery, 5, "prompt").map((result) => ({
+          id: result.id,
+          title: (result.meta.title as string) ?? "",
+          summary: (result.meta.summary as string) ?? "",
+          tags: (result.meta.tags as string[]) ?? [],
+          score: result.score
+        }))
+      : prompts.slice(0, 5).map((prompt) => ({
+          id: prompt.id,
+          title: prompt.title,
+          summary: prompt.summary,
+          tags: prompt.tags,
+          score: 1
+        }));
 
   const modelCounts = new Map<string, number>();
   const ratioCounts = new Map<string, number>();
-  const qualityCounts = new Map<string, number>();
+  const qualityCounts = new Map<"Standard" | "High" | "Ultra", number>();
   const batchCounts = new Map<number, number>();
 
   for (const run of completedRuns) {
@@ -561,15 +555,15 @@ app.get<{
         )
       : 0;
 
-  let semanticRunMatches: Array<{ id: string; title: string; engine: string; score: number }> = [];
-  if (query.length > 0) {
-    semanticRunMatches = index.search(query, 5, "run").map((result) => ({
-      id: result.id,
-      title: (result.meta.title as string) ?? "",
-      engine: (result.meta.engine as string) ?? "",
-      score: result.score
-    }));
-  }
+  const semanticRunMatches =
+    cleanQuery.length > 0
+      ? index.search(cleanQuery, 5, "run").map((result) => ({
+          id: result.id,
+          title: (result.meta.title as string) ?? "",
+          engine: (result.meta.engine as string) ?? "",
+          score: result.score
+        }))
+      : [];
 
   return {
     mode,
@@ -590,9 +584,57 @@ app.get<{
       quality: pickMostFrequent(qualityCounts, "High"),
       batchSize: pickMostFrequent(batchCounts, 1),
       averageTokens
+    },
+    retrieval: {
+      strategy: "tfidf-semantic-v1",
+      indexSize: index.size
     }
   };
+}
+
+app.get<{
+  Querystring: { mode?: "image" | "video"; query?: string };
+}>("/api/studio/suggestions", async (request) => {
+  const mode = request.query.mode === "video" ? "video" : "image";
+  const query = cleanText(request.query.query);
+  return getStudioSuggestions(mode, query);
 });
+
+function getRegenerationPolicyDecision(jobId: string) {
+  const job = getGenerationJob(jobId);
+  if (!job) {
+    return null;
+  }
+
+  const { runs } = getStore();
+  const run = runs.find((item) => item.id === job.runId);
+  if (!run) {
+    return null;
+  }
+
+  const attempt = runs.filter((item) => {
+    if (item.mode !== run.mode) {
+      return false;
+    }
+    if (run.promptExcerpt && item.promptExcerpt) {
+      return item.promptExcerpt === run.promptExcerpt;
+    }
+    return item.title.split(" ").slice(0, 2).join(" ") === run.title.split(" ").slice(0, 2).join(" ");
+  }).length;
+
+  return evaluateRegenerationPolicy({
+    mode: run.mode,
+    status: job.status,
+    backend: job.backend,
+    error: job.error ?? null,
+    outputSummary: job.outputSummary ?? run.output ?? null,
+    quality: run.quality,
+    batchSize: run.batchSize,
+    aspectRatio: run.aspectRatio,
+    tokensUsed: run.tokensUsed,
+    attempt: Math.max(1, attempt)
+  });
+}
 
 // --- Stage 6: Semantic search endpoint ---
 app.get<{
@@ -652,6 +694,48 @@ app.post<{
   });
 
   return plan;
+});
+
+app.post<{
+  Body: {
+    mode: "image" | "video";
+    goal: string;
+    constraints?: string[];
+  };
+}>("/api/assistant/plan", async (request, reply) => {
+  const goal = cleanText(request.body.goal);
+  const mode = request.body.mode === "video" ? "video" : "image";
+  const constraints = Array.isArray(request.body.constraints)
+    ? request.body.constraints.map((item) => cleanText(item)).filter(Boolean)
+    : [];
+
+  if (!goal) {
+    reply.code(400);
+    return { error: "goal is required" };
+  }
+
+  const { runs } = getStore();
+  const history = runs.map((run) => ({
+    engine: run.engine,
+    mode: run.mode,
+    quality: run.quality,
+    aspectRatio: run.aspectRatio,
+    batchSize: run.batchSize,
+    score: run.score,
+    status: run.status
+  }));
+
+  const prompt = [goal, ...constraints].join(". ");
+  const plan = createPlan(prompt, mode, history, {
+    imageModel: process.env.DEFAULT_IMAGE_MODEL ?? "sd_xl_base_1.0.safetensors",
+    videoModel: process.env.DEFAULT_VIDEO_MODEL ?? "wan2.2_ti2v_5B_fp16.safetensors"
+  });
+
+  return {
+    ...plan,
+    goal,
+    constraints
+  };
 });
 
 // --- Stage 6: Run scoring endpoint ---
@@ -795,15 +879,23 @@ app.post<{
     startComfyPolling(
       job,
       async (outputCount, duration) => {
+        const output =
+          mode === "image"
+            ? `${Math.max(1, outputCount)} image(s)`
+            : `${Math.max(1, outputCount)} clip artifact(s)`;
         await updateRunFields(run.id, {
           status: "Completed",
           duration,
           backend: "comfy",
-          output:
-            mode === "image"
-              ? `${Math.max(1, outputCount)} image(s)`
-              : `${Math.max(1, outputCount)} clip artifact(s)`
+          output
         });
+
+        const policy = getRegenerationPolicyDecision(job.id);
+        if (policy?.shouldRegenerate) {
+          await updateRunFields(run.id, {
+            output: `${output} - policy recommends retry (${policy.reasons[0]?.id ?? "quality-check"})`
+          });
+        }
       },
       async (reason, duration) => {
         await updateRunFields(run.id, {
@@ -812,6 +904,13 @@ app.post<{
           backend: "comfy",
           output: reason
         });
+
+        const policy = getRegenerationPolicyDecision(job.id);
+        if (policy?.shouldRegenerate) {
+          await updateRunFields(run.id, {
+            output: `${reason} - policy recommends retry`
+          });
+        }
       }
     );
   } else {
@@ -822,12 +921,20 @@ app.post<{
         await updateRunStatus(run.id, "Running");
       },
       async (duration) => {
+        const output = mode === "image" ? `${batchSize} image(s)` : `${aspectRatio} clip`;
         await updateRunFields(run.id, {
           status: "Completed",
           duration,
           backend: "simulated",
-          output: mode === "image" ? `${batchSize} image(s)` : `${aspectRatio} clip`
+          output
         });
+
+        const policy = getRegenerationPolicyDecision(job.id);
+        if (policy?.shouldRegenerate) {
+          await updateRunFields(run.id, {
+            output: `${output} - policy recommends retry`
+          });
+        }
       }
     );
   }
@@ -860,8 +967,109 @@ app.get<{
     backend: job.backend,
     error: job.error ?? null,
     outputSummary: job.outputSummary ?? null,
-    workflowPath: job.workflowPath ?? null
+    workflowPath: job.workflowPath ?? null,
+    policy:
+      job.status === "completed" || job.status === "failed"
+        ? getRegenerationPolicyDecision(job.id)
+        : null
   };
+});
+
+app.get<{
+  Params: { id: string };
+}>("/api/generation/:id/policy", async (request, reply) => {
+  const decision = getRegenerationPolicyDecision(request.params.id);
+  if (!decision) {
+    reply.code(404);
+    return {
+      error: "Job or run not found"
+    };
+  }
+
+  return decision;
+});
+
+app.post<{
+  Body: McpJsonRpcRequest;
+}>("/api/mcp", async (request, reply) => {
+  const mcpHandlers = {
+    searchMemory: (mode: "image" | "video", query: string) =>
+      getStudioSuggestions(mode, query),
+    createPlan: (mode: "image" | "video", goal: string, constraints: string[]) => {
+      const { runs } = getStore();
+      const history = runs.map((run) => ({
+        engine: run.engine,
+        mode: run.mode,
+        quality: run.quality,
+        aspectRatio: run.aspectRatio,
+        batchSize: run.batchSize,
+        score: run.score,
+        status: run.status
+      }));
+
+      return createPlan([goal, ...constraints].join(". "), mode, history, {
+        imageModel: process.env.DEFAULT_IMAGE_MODEL ?? "sd_xl_base_1.0.safetensors",
+        videoModel: process.env.DEFAULT_VIDEO_MODEL ?? "wan2.2_ti2v_5B_fp16.safetensors"
+      });
+    },
+    startGeneration: async (input: {
+      mode: "image" | "video";
+      prompt: string;
+      model: string;
+      aspectRatio: string;
+      quality: "Standard" | "High" | "Ultra";
+      batchSize?: number;
+    }) => {
+      const injected = await app.inject({
+        method: "POST",
+        url: "/api/generation/start",
+        payload: input
+      });
+
+      if (injected.statusCode >= 400) {
+        throw new Error(injected.body || `Generation failed (${injected.statusCode})`);
+      }
+
+      return injected.json() as {
+        jobId: string;
+        runId: string;
+        status: "queued" | "running" | "completed" | "failed";
+        backend: "comfy" | "simulated";
+        fallbackReason: string | null;
+        workflowPath: string | null;
+      };
+    },
+    getGenerationStatus: (jobId: string) => {
+      const job = getGenerationJob(jobId);
+      if (!job) {
+        return null;
+      }
+      return {
+        id: job.id,
+        runId: job.runId,
+        status: job.status,
+        backend: job.backend,
+        error: job.error ?? null,
+        outputSummary: job.outputSummary ?? null,
+        workflowPath: job.workflowPath ?? null
+      };
+    },
+    evaluateRegeneration: (jobId: string) => getRegenerationPolicyDecision(jobId)
+  };
+
+  const response = await handleMcpRequest(request.body ?? {}, mcpHandlers);
+
+  if (response.error) {
+    if (response.error.code === -32600 || response.error.code === -32602) {
+      reply.code(400);
+    } else if (response.error.code === -32601) {
+      reply.code(404);
+    } else {
+      reply.code(500);
+    }
+  }
+
+  return response;
 });
 
 app.get("/api/jobs/templates", async () => ({

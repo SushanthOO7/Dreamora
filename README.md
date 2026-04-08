@@ -17,10 +17,10 @@ Implemented:
 - Stage 3: backend persistence and create flows
 - Stage 4: generation orchestration (ComfyUI + fallback)
 - Stage 5 (v1): prompt memory and settings recommendation
+- Stage 6: semantic retrieval, planner, policies, MCP orchestration
 
 Planned and left:
 
-- Stage 6: semantic RAG, assistant planner, MCP orchestration
 - Stage 7: production hardening (auth, encrypted secret vault, queue workers, observability, multi-user support)
 
 Full checklist: `docs/implementation-status.md`
@@ -100,6 +100,14 @@ Stage 5 productivity:
 - Frequency-based recommended model/ratio/quality/batch
 - "Analyze Prompt" + "Apply Best Settings" in Studio
 
+Stage 6 orchestration:
+
+- TF-IDF semantic retrieval index for prompts and completed runs
+- Workflow planner endpoint and Studio plan panel
+- Run scoring + policy endpoints for regeneration decisions
+- Generation status now includes policy decision metadata
+- MCP-compatible JSON-RPC orchestration endpoint (`POST /api/mcp`)
+
 ## API Endpoints
 
 Health and runtime:
@@ -131,8 +139,20 @@ Core entities:
 Studio generation:
 
 - `GET /api/studio/suggestions`
+- `GET /api/studio/search`
+- `POST /api/studio/plan`
+- `POST /api/assistant/plan`
 - `POST /api/generation/start`
 - `GET /api/generation/:id`
+- `GET /api/generation/:id/policy`
+- `POST /api/mcp`
+
+Scoring and policies:
+
+- `POST /api/runs/:id/score`
+- `GET /api/runs/:id/score`
+- `GET /api/policies`
+- `PATCH /api/policies/:id`
 
 ## Local Setup
 

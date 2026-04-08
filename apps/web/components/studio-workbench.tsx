@@ -349,6 +349,13 @@ export function StudioWorkbench({
               output: status.outputSummary ?? undefined
             }
           });
+          if (status.policy?.shouldRegenerate) {
+            const reason = status.policy.reasons[0]?.message ?? "Policy check requested regeneration.";
+            dispatch({
+              type: "SET_NOTICE",
+              notice: `Policy recommendation: retry suggested (${reason})`
+            });
+          }
           dispatch({ type: "GENERATION_DONE" });
           return;
         }
@@ -363,6 +370,13 @@ export function StudioWorkbench({
               output: status.error ?? "Generation failed"
             }
           });
+          if (status.policy?.shouldRegenerate) {
+            const reason = status.policy.reasons[0]?.message ?? "Policy check requested regeneration.";
+            dispatch({
+              type: "SET_NOTICE",
+              notice: `Policy recommendation: retry suggested (${reason})`
+            });
+          }
           dispatch({ type: "GENERATION_ERROR", error: status.error ?? "Generation failed." });
           return;
         }

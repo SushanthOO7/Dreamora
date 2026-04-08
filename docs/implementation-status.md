@@ -121,18 +121,29 @@ Delivered:
   - Timeout retry (disabled by default)
   - Parameter adjustments per policy (quality, batch, steps)
   - Policy management: `GET /api/policies`, `PATCH /api/policies/:id`
+  - Runtime policy evaluation endpoint: `GET /api/generation/:id/policy`
+  - Policy signal embedded in generation status response
+- MCP orchestration integration:
+  - JSON-RPC endpoint: `POST /api/mcp`
+  - Tool registry and dispatch for:
+    - semantic memory search
+    - assistant workflow planning
+    - generation start
+    - generation status
+    - regeneration policy evaluation
 - Studio frontend updates:
   - Workflow planner panel with step visualization
   - Apply plan settings button
   - Run scoring buttons (1-5) on completed runs
   - Score feedback toast with regeneration decision display
+  - Runtime notice when policy recommends retry on completed/failed jobs
 
 Known limitations:
 
 - Semantic index is in-memory, rebuilt on each suggestions request
 - Scoring is in-memory (not persisted across restarts except via store.score field)
-- MCP server integration deferred to Stage 7 (requires stable direct orchestration first)
-- No actual auto-regeneration execution yet (policies evaluate but don't trigger runs)
+- MCP endpoint is local-only and not yet split into a standalone server process
+- No automatic retry execution yet (policies return recommendations; retries are not auto-submitted)
 
 ## Stage 7 - Production Hardening
 
@@ -161,4 +172,4 @@ Verified baseline for this repository:
 1. Replace JSON file store with database-backed persistence (PostgreSQL + Prisma or Drizzle).
 2. Add encrypted provider secret vault and never store raw keys in plain JSON.
 3. Add robust worker queue and durable job state for generation lifecycle.
-4. Implement Stage 6 semantic retrieval and assistant orchestration.
+4. Harden Stage 6 orchestration with durable memory index + automatic retry worker.

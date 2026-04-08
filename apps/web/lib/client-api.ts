@@ -125,6 +125,27 @@ export type GenerationStatusResponse = {
   error: string | null;
   outputSummary: string | null;
   workflowPath: string | null;
+  policy?: {
+    policyVersion: string;
+    shouldRegenerate: boolean;
+    severity: "low" | "medium" | "high";
+    reasons: Array<{
+      id: string;
+      severity: "low" | "medium" | "high";
+      message: string;
+    }>;
+    suggestedAdjustments: {
+      quality?: "Standard" | "High" | "Ultra";
+      batchSize?: number;
+      aspectRatio?: string;
+      promptAddendum?: string;
+    };
+    nextAction:
+      | "continue_polling"
+      | "accept_result"
+      | "retry_with_adjustments"
+      | "manual_review";
+  } | null;
 };
 
 export type StudioSuggestionsResponse = {
@@ -179,6 +200,18 @@ export async function getGenerationStatus(
   }
 
   return response.json() as Promise<GenerationStatusResponse>;
+}
+
+export async function getGenerationPolicy(jobId: string): Promise<NonNullable<GenerationStatusResponse["policy"]>> {
+  const response = await fetch(`${API_URL}/api/generation/${jobId}/policy`, {
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    throw new Error(`Request failed: /api/generation/${jobId}/policy`);
+  }
+
+  return response.json() as Promise<NonNullable<GenerationStatusResponse["policy"]>>;
 }
 
 export async function getStudioSuggestions(

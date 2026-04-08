@@ -1,7 +1,6 @@
-import type { AssistantPlan } from "./planner.js";
+import type { GenerationPlan } from "./planner.js";
 import type { RegenerationPolicyDecision } from "./policy.js";
 import type { GenerationStatus } from "./generation.js";
-import type { SemanticPromptMatch, SemanticRunMatch, StudioRecommendations } from "./semantic.js";
 
 type Mode = "image" | "video";
 
@@ -38,12 +37,38 @@ export type McpHandlers = {
   searchMemory: (mode: Mode, query: string) => {
     mode: Mode;
     memory: {
-      promptMatches: SemanticPromptMatch[];
-      topRuns: SemanticRunMatch[];
+      promptMatches: Array<{
+        id: string;
+        title: string;
+        summary: string;
+        tags: string[];
+        score: number;
+      }>;
+      topRuns: Array<{
+        id: string;
+        title: string;
+        engine: string;
+        mode: Mode;
+        status: string;
+        duration: string;
+        output: string;
+        tokensUsed: number;
+        aspectRatio: string | null;
+        quality: string | null;
+        batchSize: number | null;
+        promptExcerpt: string | null;
+        score?: number | null;
+      }>;
     };
-    recommendations: StudioRecommendations;
+    recommendations: {
+      model: string;
+      aspectRatio: string;
+      quality: "Standard" | "High" | "Ultra";
+      batchSize: number;
+      averageTokens: number;
+    };
   };
-  createPlan: (mode: Mode, goal: string, constraints: string[]) => AssistantPlan;
+  createPlan: (mode: Mode, goal: string, constraints: string[]) => GenerationPlan;
   startGeneration: (input: {
     mode: Mode;
     prompt: string;
