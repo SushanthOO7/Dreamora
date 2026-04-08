@@ -1,6 +1,7 @@
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { dashboardResponse, modelRecommendations, orchestrationStrategy } from "@dreamora/shared";
+import "./env.js";
 import {
   createComfyOrSimulatedJob,
   getGenerationJob,
@@ -72,6 +73,19 @@ function requireFields(values: Array<{ key: string; value: string }>): string | 
 
 app.get("/health", async () => ({
   ok: true
+}));
+
+app.get("/api/runtime", async () => ({
+  comfyEnabled: process.env.COMFY_ENABLED === "1",
+  comfyUrl: process.env.COMFYUI_URL ?? null,
+  comfyImageWorkflowPath:
+    process.env.COMFY_IMAGE_WORKFLOW_PATH ??
+    process.env.COMFY_WORKFLOW_PATH ??
+    null,
+  comfyVideoWorkflowPath:
+    process.env.COMFY_VIDEO_WORKFLOW_PATH ??
+    process.env.COMFY_WORKFLOW_PATH ??
+    null
 }));
 
 app.get("/api/dashboard", async () => dashboardResponse);
