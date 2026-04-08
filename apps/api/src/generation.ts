@@ -174,11 +174,15 @@ export function formatComfySubmitFailure(status: number, bodyText: string): stri
 
   const nodeErrors = parsed.node_errors ?? {};
   const nodeSummaries: string[] = [];
+  const detailTexts: string[] = [];
   for (const [nodeId, nodeInfo] of Object.entries(nodeErrors)) {
     const errors = Array.isArray(nodeInfo?.errors) ? nodeInfo.errors : [];
     for (const entry of errors.slice(0, 2)) {
       const entryMessage = compact(entry.message ?? entry.type ?? "validation error");
       const entryDetails = compact(entry.details ?? "");
+      if (entryDetails) {
+        detailTexts.push(entryDetails.toLowerCase());
+      }
       nodeSummaries.push(
         entryDetails
           ? `node ${nodeId}: ${entryMessage} (${entryDetails})`
@@ -195,6 +199,32 @@ export function formatComfySubmitFailure(status: number, bodyText: string): stri
 
   if (nodeSummaries.length > 0) {
     parts.push(`Node errors: ${nodeSummaries.join("; ")}`);
+  }
+
+  const detailsBlob = detailTexts.join(" || ");
+  const hints: string[] = [];
+  if (detailsBlob.includes("unet_name") && detailsBlob.includes("not in []")) {
+    hints.push(
+      "UNET list is empty. Add a video model file to ComfyUI/models/diffusion_models and restart ComfyUI."
+    );
+  }
+  if (detailsBlob.includes("clip_name") && detailsBlob.includes("not in []")) {
+    hints.push(
+      "Text encoder list is empty. Add the encoder file to ComfyUI/models/text_encoders and restart ComfyUI."
+    );
+  }
+  if (detailsBlob.includes("vae_name") && detailsBlob.includes("not in []")) {
+    hints.push(
+      "VAE list is empty. Add a VAE to ComfyUI/models/vae or set COMFY_VIDEO_VAE_NAME to an available option."
+    );
+  }
+  if (detailsBlob.includes("unet_name") && detailsBlob.includes("sd_xl_base_1.0.safetensors")) {
+    hints.push(
+      "Selected model looks like an image checkpoint; in video mode choose a video UNET such as wan2.2_ti2v_5B_fp16.safetensors."
+    );
+  }
+  if (hints.length > 0) {
+    parts.push(`Hints: ${hints.join(" ")}`);
   }
 
   return truncate(parts.join(". "), 900);
@@ -232,6 +262,10 @@ function applyWorkflowTokens(
   const batch = request.mode === "image" ? request.batchSize ?? 1 : 1;
   const seed = randomSeed();
   const safePrompt = escapeJsonString(request.prompt);
+  const videoClipName = escapeJsonString(
+    (process.env.COMFY_VIDEO_CLIP_NAME ?? "umt5_xxl_fp8_e4m3fn_scaled.safetensors").trim() ||
+      "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+  );
   const videoVaeName = escapeJsonString(
     (process.env.COMFY_VIDEO_VAE_NAME ?? "pixel_space").trim() || "pixel_space"
   );
@@ -267,6 +301,7 @@ function applyWorkflowTokens(
     .replaceAll("__STEPS__", String(steps))
     .replaceAll("__BATCH__", String(batch))
     .replaceAll("__SEED__", String(seed))
+    .replaceAll("__VIDEO_CLIP_NAME__", videoClipName)
     .replaceAll("__VIDEO_VAE_NAME__", videoVaeName)
     .replaceAll("__RUN_ID__", runId);
 

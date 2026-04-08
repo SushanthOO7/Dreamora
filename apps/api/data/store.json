@@ -1,0 +1,193 @@
+{
+  "version": 3,
+  "projects": [
+    {
+      "id": "project_1",
+      "name": "Aura product teaser",
+      "format": "Image to video",
+      "status": "In progress",
+      "summary": "Luxury product launch workflow with FLUX stills, Wan animation, and SeedVR2 upscale.",
+      "createdAt": "2026-04-08T07:57:20.513Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    },
+    {
+      "id": "project_2",
+      "name": "Noir fashion moodboard",
+      "format": "Image batch",
+      "status": "Ready",
+      "summary": "Editorial still generation with typography overlays and portrait-safe prompt presets.",
+      "createdAt": "2026-04-08T07:57:20.513Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    },
+    {
+      "id": "project_3",
+      "name": "Studio lighting tests",
+      "format": "Research set",
+      "status": "Draft",
+      "summary": "Controlled prompt experiments comparing lens language, film stock cues, and negative handling.",
+      "createdAt": "2026-04-08T07:57:20.513Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    }
+  ],
+  "prompts": [
+    {
+      "id": "prompt_1",
+      "title": "Cinematic product close-up",
+      "engine": "FLUX.1-dev GGUF",
+      "type": "Still image",
+      "summary": "Built for premium hardware shots with precise reflections, shallow depth, and restrained copy.",
+      "tags": [
+        "Luxury",
+        "Macro",
+        "Typography-safe"
+      ],
+      "projectId": null,
+      "createdAt": "2026-04-08T07:57:20.513Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    },
+    {
+      "id": "prompt_2",
+      "title": "Founder intro motion pass",
+      "engine": "Wan 2.2 5B",
+      "type": "Video",
+      "summary": "Short talking-head animation with soft camera drift, stable framing, and upscale-ready pacing.",
+      "tags": [
+        "16 fps",
+        "TeaCache",
+        "RIFE"
+      ],
+      "projectId": null,
+      "createdAt": "2026-04-08T07:57:20.513Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    },
+    {
+      "id": "prompt_3",
+      "title": "Brand moodboard retrieval",
+      "engine": "Assistant + RAG",
+      "type": "Preparation",
+      "summary": "Pulls saved references, style notes, and prior winning prompts before generation starts.",
+      "tags": [
+        "Memory",
+        "References",
+        "Preflight"
+      ],
+      "projectId": null,
+      "createdAt": "2026-04-08T07:57:20.513Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    }
+  ],
+  "runs": [
+    {
+      "id": "run_1",
+      "title": "Aura teaser keyframe set",
+      "engine": "FLUX.1-dev GGUF",
+      "mode": "image",
+      "status": "Completed",
+      "duration": "4m 12s",
+      "output": "12 stills",
+      "tokensUsed": 12000,
+      "promptExcerpt": "studio seed image prompt",
+      "aspectRatio": "1:1",
+      "quality": "High",
+      "batchSize": 2,
+      "backend": "simulated",
+      "projectId": null,
+      "referenceAssetIds": [],
+      "createdAt": "2026-04-07T07:57:20.514Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    },
+    {
+      "id": "run_2",
+      "title": "Aura teaser motion draft",
+      "engine": "Wan 2.2 5B",
+      "mode": "video",
+      "status": "Running",
+      "duration": "11m 03s",
+      "output": "480p clip",
+      "tokensUsed": 15500,
+      "promptExcerpt": "studio seed video prompt",
+      "aspectRatio": "16:9",
+      "quality": "Standard",
+      "batchSize": 1,
+      "backend": "simulated",
+      "projectId": null,
+      "referenceAssetIds": [],
+      "createdAt": "2026-04-06T07:57:20.515Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    },
+    {
+      "id": "run_3",
+      "title": "Editorial upscale pass",
+      "engine": "SeedVR2",
+      "mode": "image",
+      "status": "Queued",
+      "duration": "Pending",
+      "output": "1080p master",
+      "tokensUsed": 19000,
+      "promptExcerpt": "studio seed image prompt",
+      "aspectRatio": "1:1",
+      "quality": "High",
+      "batchSize": 2,
+      "backend": "simulated",
+      "projectId": null,
+      "referenceAssetIds": [],
+      "createdAt": "2026-04-05T07:57:20.515Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    }
+  ],
+  "providers": [
+    {
+      "id": "provider_1",
+      "name": "Dreamora local",
+      "category": "Self-hosted",
+      "status": "Connected",
+      "auth": "Internal runtime",
+      "defaultModel": "FLUX + Wan 2.2",
+      "note": "Primary local path using your V100 server and ComfyUI orchestration.",
+      "secretConfigured": true,
+      "secretHint": "configured",
+      "createdAt": "2026-04-08T07:57:20.513Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    },
+    {
+      "id": "provider_2",
+      "name": "OpenAI images",
+      "category": "Third-party API",
+      "status": "Needs key",
+      "auth": "API key",
+      "defaultModel": "gpt-image-1",
+      "note": "Good fallback for fast external image generation when you want hosted inference.",
+      "secretConfigured": false,
+      "secretHint": null,
+      "createdAt": "2026-04-08T07:57:20.513Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    },
+    {
+      "id": "provider_3",
+      "name": "Runway",
+      "category": "Third-party API",
+      "status": "Needs key",
+      "auth": "API key",
+      "defaultModel": "Gen-4",
+      "note": "Video-first hosted provider for external motion generation.",
+      "secretConfigured": false,
+      "secretHint": null,
+      "createdAt": "2026-04-08T07:57:20.513Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    },
+    {
+      "id": "provider_4",
+      "name": "Replicate",
+      "category": "Third-party API",
+      "status": "Optional",
+      "auth": "API token",
+      "defaultModel": "Flux / video community models",
+      "note": "Useful as a multi-model fallback layer when you want broader model coverage.",
+      "secretConfigured": false,
+      "secretHint": null,
+      "createdAt": "2026-04-08T07:57:20.513Z",
+      "updatedAt": "2026-04-08T07:57:20.513Z"
+    }
+  ],
+  "assets": []
+}

@@ -9,7 +9,7 @@
   "38": {
     "class_type": "CLIPLoader",
     "inputs": {
-      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "clip_name": "__VIDEO_CLIP_NAME__",
       "type": "wan",
       "device": "default"
     }

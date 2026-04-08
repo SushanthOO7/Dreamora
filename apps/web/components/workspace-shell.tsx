@@ -2,56 +2,66 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 import type { Route } from "next";
+import { PageTransition } from "./motion-wrapper";
 
 const navigation = [
-  { href: "/studio", label: "Studio" },
-  { href: "/providers", label: "Providers" },
-  { href: "/reports", label: "Reports" },
-  { href: "/settings", label: "Settings" }
-] as const satisfies ReadonlyArray<{ href: Route; label: string }>;
+  {
+    href: "/studio",
+    label: "Studio",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="3" />
+        <path d="M9 12h6M12 9v6" />
+      </svg>
+    )
+  },
+  {
+    href: "/reports",
+    label: "Reports",
+    icon: (
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 20V10M6 20V4M18 20v-6" />
+      </svg>
+    )
+  }
+] as const satisfies ReadonlyArray<{ href: Route; label: string; icon: React.ReactNode }>;
 
 export function WorkspaceShell({
   title,
   description,
+  actions,
   children
 }: {
   title: string;
   description: string;
+  actions?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
 
   return (
     <main className="min-h-screen">
-      <div className="grid-fade fixed inset-0 opacity-55" />
-      <div className="relative mx-auto grid min-h-screen max-w-[1500px] gap-6 px-4 py-4 lg:grid-cols-[280px_1fr] lg:px-6">
-        <aside className="panel rounded-[32px] p-4 lg:p-5">
-          <div className="flex items-center gap-3 rounded-[24px] border border-black/8 bg-white/80 px-4 py-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-black text-sm font-semibold text-white">
+      <div className="grid-fade fixed inset-0 opacity-40" />
+
+      <div className="relative mx-auto grid min-h-screen max-w-[1500px] gap-5 px-4 py-4 lg:grid-cols-[240px_1fr] lg:px-6">
+        {/* ── Sidebar ──────────────────────────────── */}
+        <aside className="panel-strong sticky top-4 h-fit rounded-[28px] p-4 lg:p-5">
+          <Link
+            href="/"
+            className="flex items-center gap-3 rounded-[20px] border border-[var(--line)] bg-white/60 px-4 py-3.5 transition-colors hover:bg-white/80"
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--accent)] text-sm font-bold text-white">
               D
             </div>
             <div>
-              <p className="text-lg font-semibold tracking-tight">Dreamora</p>
-              <p className="text-xs text-black/45">
-                Personal generation workspace
+              <p className="text-sm font-semibold tracking-tight">Dreamora</p>
+              <p className="text-[11px] text-[var(--foreground)]/40">
+                AI Generation
               </p>
             </div>
-          </div>
-
-          <div className="mt-4 rounded-[24px] border border-black/8 bg-[#f7f6f2] px-4 py-3">
-            <p className="text-xs uppercase tracking-[0.24em] text-black/35">
-              Quick actions
-            </p>
-            <div className="mt-3 grid gap-2 text-sm">
-              <button className="rounded-2xl bg-black px-4 py-3 text-left font-medium text-white">
-                New generation run
-              </button>
-              <button className="rounded-2xl border border-black/8 bg-white px-4 py-3 text-left font-medium text-black/72">
-                Configure providers
-              </button>
-            </div>
-          </div>
+          </Link>
 
           <nav className="mt-5 space-y-1">
             {navigation.map((item) => {
@@ -61,55 +71,77 @@ export function WorkspaceShell({
                 <Link
                   key={item.href}
                   href={item.href}
-                  className={[
-                    "block rounded-[22px] px-4 py-3 text-sm transition",
-                    active
-                      ? "bg-black text-white"
-                      : "text-black/65 hover:bg-white/75"
-                  ].join(" ")}
+                  className="relative block"
                 >
-                  {item.label}
+                  <div
+                    className={[
+                      "flex items-center gap-3 rounded-[18px] px-4 py-3 text-sm transition-all duration-200",
+                      active
+                        ? "bg-[var(--accent)] text-white font-medium shadow-md shadow-black/10"
+                        : "text-[var(--foreground)]/55 hover:bg-white/60 hover:text-[var(--foreground)]"
+                    ].join(" ")}
+                  >
+                    <span className={active ? "opacity-100" : "opacity-50"}>
+                      {item.icon}
+                    </span>
+                    {item.label}
+                  </div>
                 </Link>
               );
             })}
           </nav>
 
-          <div className="mt-8 rounded-[24px] border border-black/8 bg-white/70 px-4 py-4">
-            <p className="text-sm font-medium">Single-server mode</p>
-            <p className="mt-2 text-sm leading-6 text-black/55">
-              UI, API, and Comfy orchestration can all live on the same machine
-              while you validate the workflow through your VS Code tunnel.
+          {/* Mini status */}
+          <div className="mt-6 rounded-[18px] border border-[var(--line)] bg-white/50 px-4 py-3.5">
+            <div className="flex items-center gap-2">
+              <span className="h-2 w-2 rounded-full bg-[var(--success)] animate-pulse" />
+              <span className="text-xs font-medium text-[var(--foreground)]/50">
+                System online
+              </span>
+            </div>
+            <p className="mt-1.5 text-[11px] leading-4 text-[var(--foreground)]/35">
+              Local ComfyUI connected
             </p>
           </div>
         </aside>
 
-        <section className="space-y-6">
-          <header className="panel rounded-[32px] px-6 py-5">
-            <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+        {/* ── Main content ─────────────────────────── */}
+        <PageTransition className="space-y-5">
+          <header className="panel-strong rounded-[28px] px-6 py-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
-                <p className="text-sm uppercase tracking-[0.22em] text-black/35">
-                  Workspace
-                </p>
-                <h1 className="mt-3 text-4xl font-semibold tracking-[-0.04em] text-black md:text-5xl">
+                <motion.h1
+                  initial={{ opacity: 0, x: -12 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ duration: 0.4 }}
+                  className="text-3xl font-semibold tracking-[-0.03em] text-[var(--foreground)] md:text-4xl"
+                >
                   {title}
-                </h1>
-                <p className="mt-3 max-w-2xl text-base leading-7 text-black/58">
+                </motion.h1>
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.15, duration: 0.4 }}
+                  className="mt-2 max-w-xl text-sm leading-6 text-[var(--foreground)]/45"
+                >
                   {description}
-                </p>
+                </motion.p>
               </div>
-              <div className="flex flex-wrap gap-3">
-                <button className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-medium">
-                  Sync ComfyUI
-                </button>
-                <button className="rounded-full bg-black px-4 py-2 text-sm font-medium text-white">
-                  New run
-                </button>
-              </div>
+              {actions && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: 0.2, duration: 0.3 }}
+                  className="flex flex-wrap gap-3"
+                >
+                  {actions}
+                </motion.div>
+              )}
             </div>
           </header>
 
           {children}
-        </section>
+        </PageTransition>
       </div>
     </main>
   );

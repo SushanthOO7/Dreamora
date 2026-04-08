@@ -63,6 +63,12 @@ test("video workflow keeps VAE configurable via token", async () => {
   assert.match(rawTemplate, /"vae_name"\s*:\s*"__VIDEO_VAE_NAME__"/);
 });
 
+test("video workflow keeps text encoder configurable via token", async () => {
+  const workflowPath = path.join(process.cwd(), "apps", "api", "workflows", "comfy-video-template.json");
+  const rawTemplate = await readFile(workflowPath, "utf8");
+  assert.match(rawTemplate, /"clip_name"\s*:\s*"__VIDEO_CLIP_NAME__"/);
+});
+
 test("video generation does not silently fallback when Comfy submission fails", async () => {
   const previous = {
     COMFY_ENABLED: process.env.COMFY_ENABLED,
@@ -121,4 +127,35 @@ test("comfy validation error formatting surfaces node-level details", () => {
   const message = formatComfySubmitFailure(400, body);
   assert.match(message, /prompt_outputs_failed_validation/i);
   assert.match(message, /unet_name/i);
+});
+
+test("comfy validation formatting adds setup hints when node options are empty", () => {
+  const body = JSON.stringify({
+    error: {
+      type: "prompt_outputs_failed_validation",
+      message: "Prompt outputs failed validation"
+    },
+    node_errors: {
+      "37": {
+        errors: [
+          {
+            message: "Value not in list",
+            details: "unet_name: 'sd_xl_base_1.0.safetensors' not in []"
+          }
+        ]
+      },
+      "38": {
+        errors: [
+          {
+            message: "Value not in list",
+            details: "clip_name: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors' not in []"
+          }
+        ]
+      }
+    }
+  });
+
+  const message = formatComfySubmitFailure(400, body);
+  assert.match(message, /diffusion_models/i);
+  assert.match(message, /text_encoders/i);
 });

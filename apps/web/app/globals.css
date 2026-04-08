@@ -1,18 +1,24 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f5f3ef;
-  --surface: rgba(255, 255, 255, 0.78);
-  --surface-strong: rgba(255, 255, 255, 0.92);
-  --foreground: #141414;
-  --muted: #68707f;
-  --line: rgba(20, 20, 20, 0.09);
-  --line-strong: rgba(20, 20, 20, 0.14);
-  --accent: #141414;
-  --accent-soft: #eef1f8;
-  --success: #1d8f63;
-  --shadow: 0 18px 60px rgba(28, 34, 48, 0.08);
-  --font-sans: "Inter", "Segoe UI", sans-serif;
+  --background: #f7f2ea;
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-strong: rgba(255, 255, 255, 0.88);
+  --foreground: #1a1714;
+  --muted: #8a8578;
+  --line: rgba(30, 24, 16, 0.07);
+  --line-strong: rgba(30, 24, 16, 0.12);
+  --accent: #1a1714;
+  --accent-warm: #d4845a;
+  --accent-glow: #e8a06a;
+  --success: #3daa7e;
+  --success-soft: rgba(61, 170, 126, 0.1);
+  --danger: #d94f4f;
+  --danger-soft: rgba(217, 79, 79, 0.08);
+  --shadow: 0 12px 48px rgba(30, 24, 16, 0.06);
+  --shadow-lg: 0 24px 80px rgba(30, 24, 16, 0.08);
+  --font-sans: var(--font-inter), "Segoe UI", system-ui, sans-serif;
+  --font-serif: var(--font-playfair), Georgia, "Times New Roman", serif;
 }
 
 * {
@@ -25,12 +31,11 @@ html {
 
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at top left, rgba(222, 227, 241, 0.75), transparent 32%),
-    radial-gradient(circle at top right, rgba(248, 233, 220, 0.55), transparent 28%),
-    linear-gradient(180deg, #faf8f4 0%, #f4f1eb 100%);
+  background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 a {
@@ -38,17 +43,145 @@ a {
   text-decoration: none;
 }
 
+::selection {
+  background: rgba(212, 132, 90, 0.2);
+}
+
+/* ── Glass panels ─────────────────────────────── */
+
+.panel {
+  background: var(--surface);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+
+.panel-strong {
+  background: var(--surface-strong);
+  backdrop-filter: blur(32px);
+  -webkit-backdrop-filter: blur(32px);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-lg);
+}
+
+/* ── Grid background ──────────────────────────── */
+
 .grid-fade {
   background-image:
     linear-gradient(var(--line) 1px, transparent 1px),
     linear-gradient(90deg, var(--line) 1px, transparent 1px);
   background-size: 72px 72px;
-  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.95), rgba(0, 0, 0, 0.1));
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.6), transparent);
 }
 
-.panel {
-  background: var(--surface);
-  backdrop-filter: blur(20px);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow);
+/* ── Wave keyframes ───────────────────────────── */
+
+@keyframes wave-drift {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+@keyframes wave-drift-reverse {
+  0% { transform: translateX(-50%); }
+  100% { transform: translateX(0); }
+}
+
+@keyframes wave-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-12px); }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* ── Wave layers ──────────────────────────────── */
+
+.wave-layer {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 200%;
+  pointer-events: none;
+}
+
+.wave-1 { animation: wave-drift 28s linear infinite; }
+.wave-2 { animation: wave-drift-reverse 24s linear infinite; }
+.wave-3 { animation: wave-drift 32s linear infinite; }
+.wave-4 { animation: wave-drift-reverse 20s linear infinite; }
+.wave-5 { animation: wave-drift 36s linear infinite; }
+
+/* ── Scrollbar ────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(30, 24, 16, 0.12);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(30, 24, 16, 0.22);
+}
+
+/* ── Workflow node connectors ─────────────────── */
+
+.node-connector {
+  position: relative;
+}
+
+.node-connector::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -28px;
+  width: 2px;
+  height: 28px;
+  background: linear-gradient(to bottom, var(--success), transparent);
+  transform: translateX(-50%);
+}
+
+.node-connector-dot {
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--surface-strong);
+  border: 2px solid var(--success);
+  transform: translateX(-50%);
+  z-index: 1;
+}
+
+/* ── Chart tooltips ───────────────────────────── */
+
+.chart-bar {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  border-radius: 8px 8px 0 0;
+}
+
+.chart-bar:hover {
+  opacity: 0.85;
+  transform: scaleY(1.02);
+  transform-origin: bottom;
 }

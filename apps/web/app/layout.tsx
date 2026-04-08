@@ -1,9 +1,23 @@
 import type { Metadata } from "next";
+import { Inter, Playfair_Display } from "next/font/google";
 import "./globals.css";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap"
+});
+
+const playfair = Playfair_Display({
+  subsets: ["latin"],
+  variable: "--font-playfair",
+  display: "swap"
+});
 
 export const metadata: Metadata = {
   title: "Dreamora",
-  description: "A personal productivity workspace for image and video generation."
+  description:
+    "Build, automate, and scale with AI designed to think naturally — generation that flows with you."
 };
 
 export default function RootLayout({
@@ -14,7 +28,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      data-scroll-behavior="smooth"
+      className={`${inter.variable} ${playfair.variable}`}
       suppressHydrationWarning
     >
       <body suppressHydrationWarning>{children}</body>
