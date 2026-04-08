@@ -418,14 +418,20 @@ export function deriveModelsFromProviders(providers: ProviderConfig[]): StudioMo
   for (const provider of providers) {
     const model = provider.defaultModel?.trim() || `${provider.name} model`;
     const text = `${provider.name} ${provider.defaultModel}`.toLowerCase();
-    const isVideo = text.includes("wan") || text.includes("runway") || text.includes("video");
+    const hasImage = text.includes("flux") || text.includes("image") || text.includes("sdxl");
+    const hasVideo = text.includes("wan") || text.includes("runway") || text.includes("video");
     const isConnected = provider.secretConfigured || provider.category === "Self-hosted";
 
     if (!isConnected && provider.status !== "Optional") {
       continue;
     }
 
-    if (isVideo) {
+    // When a provider supports both image and video (e.g. "FLUX + Wan 2.2"),
+    // add it to BOTH lists so mode-switching picks the correct entry.
+    if (hasImage && hasVideo) {
+      imageModels.push(model);
+      videoModels.push(model);
+    } else if (hasVideo) {
       videoModels.push(model);
     } else {
       imageModels.push(model);

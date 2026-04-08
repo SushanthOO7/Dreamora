@@ -106,7 +106,7 @@ function cleanText(value: string | undefined): string {
   return (value ?? "").trim();
 }
 
-function normalizeModelName(raw: string): string {
+function normalizeModelName(raw: string, mode?: "image" | "video"): string {
   const text = cleanText(raw);
   if (!text) {
     return text;
@@ -118,10 +118,22 @@ function normalizeModelName(raw: string): string {
   }
 
   const lower = text.toLowerCase();
-  if (lower.includes("dreamora flux local") || lower.includes("flux")) {
+  const hasFlux = lower.includes("dreamora flux local") || lower.includes("flux");
+  const hasWan = lower.includes("dreamora wan") || lower.includes("wan");
+
+  // When the model name contains both image and video keywords (e.g. "FLUX + Wan 2.2"),
+  // use the mode to pick the correct checkpoint instead of falling through to the first match.
+  if (hasFlux && hasWan) {
+    if (mode === "video") {
+      return process.env.DEFAULT_VIDEO_MODEL ?? "wan2.2_ti2v_5B_fp16.safetensors";
+    }
     return process.env.DEFAULT_IMAGE_MODEL ?? "sd_xl_base_1.0.safetensors";
   }
-  if (lower.includes("dreamora wan") || lower.includes("wan")) {
+
+  if (hasFlux) {
+    return process.env.DEFAULT_IMAGE_MODEL ?? "sd_xl_base_1.0.safetensors";
+  }
+  if (hasWan) {
     return process.env.DEFAULT_VIDEO_MODEL ?? "wan2.2_ti2v_5B_fp16.safetensors";
   }
 
@@ -1211,7 +1223,7 @@ app.post<{
   const mode = request.body.mode;
   const prompt = cleanText(request.body.prompt);
   const model = cleanText(request.body.model);
-  const normalizedModel = normalizeModelName(model);
+  const normalizedModel = normalizeModelName(model, mode);
   const aspectRatio = cleanText(request.body.aspectRatio);
   const quality = request.body.quality;
   const projectId = cleanText(request.body.projectId) || null;
