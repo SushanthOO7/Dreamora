@@ -1,6 +1,7 @@
 import type { ProviderConfig, RunSummary } from "@dreamora/shared";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
+const ERROR_DETAIL_LIMIT = 1200;
 
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
@@ -9,7 +10,7 @@ async function getJson<T>(path: string): Promise<T> {
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(`GET ${path} failed (${response.status}): ${detail.slice(0, 200)}`);
+    throw new Error(`GET ${path} failed (${response.status}): ${detail.slice(0, ERROR_DETAIL_LIMIT)}`);
   }
 
   return response.json() as Promise<T>;
@@ -26,7 +27,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(`POST ${path} failed (${response.status}): ${detail.slice(0, 200)}`);
+    throw new Error(`POST ${path} failed (${response.status}): ${detail.slice(0, ERROR_DETAIL_LIMIT)}`);
   }
 
   return response.json() as Promise<T>;
@@ -39,7 +40,7 @@ async function deleteJson<T>(path: string): Promise<T> {
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(`DELETE ${path} failed (${response.status}): ${detail.slice(0, 200)}`);
+    throw new Error(`DELETE ${path} failed (${response.status}): ${detail.slice(0, ERROR_DETAIL_LIMIT)}`);
   }
 
   return response.json() as Promise<T>;
@@ -56,7 +57,7 @@ async function patchJson<T>(path: string, body: unknown): Promise<T> {
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(`PATCH ${path} failed (${response.status}): ${detail.slice(0, 200)}`);
+    throw new Error(`PATCH ${path} failed (${response.status}): ${detail.slice(0, ERROR_DETAIL_LIMIT)}`);
   }
 
   return response.json() as Promise<T>;
@@ -139,7 +140,9 @@ export async function uploadAsset(input: FormData): Promise<StudioAsset> {
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new Error(`POST /api/assets/upload failed (${response.status}): ${detail.slice(0, 200)}`);
+    throw new Error(
+      `POST /api/assets/upload failed (${response.status}): ${detail.slice(0, ERROR_DETAIL_LIMIT)}`
+    );
   }
 
   return response.json() as Promise<StudioAsset>;

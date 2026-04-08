@@ -232,6 +232,7 @@ COMFYUI_URL=http://127.0.0.1:8188
 COMFY_WORKFLOW_PATH=workflows/comfy-template.json
 COMFY_IMAGE_WORKFLOW_PATH=workflows/comfy-template.json
 COMFY_VIDEO_WORKFLOW_PATH=workflows/comfy-video-template.json
+COMFY_VIDEO_VAE_NAME=pixel_space
 DEFAULT_IMAGE_MODEL=sd_xl_base_1.0.safetensors
 DEFAULT_VIDEO_MODEL=wan2.2_ti2v_5B_fp16.safetensors
 ```
@@ -300,6 +301,7 @@ API_PROXY_TARGET=http://127.0.0.1:8787
 
 - workflow JSON format wrong or node inputs invalid
 - loader model value must match actual local model filename
+- if VAE validation fails, set `COMFY_VIDEO_VAE_NAME` to an available VAE from your ComfyUI dropdown (for many installs `pixel_space` is valid)
 - check Studio fallback reason text for exact Comfy error
 
 ## Documentation

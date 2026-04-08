@@ -2,7 +2,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createComfyOrSimulatedJob } from "./generation.js";
+import {
+  createComfyOrSimulatedJob,
+  formatComfySubmitFailure
+} from "./generation.js";
 
 type PromptNode = {
   class_type: string;
@@ -54,6 +57,12 @@ test("video workflow is Comfy API prompt JSON", async () => {
   );
 });
 
+test("video workflow keeps VAE configurable via token", async () => {
+  const workflowPath = path.join(process.cwd(), "apps", "api", "workflows", "comfy-video-template.json");
+  const rawTemplate = await readFile(workflowPath, "utf8");
+  assert.match(rawTemplate, /"vae_name"\s*:\s*"__VIDEO_VAE_NAME__"/);
+});
+
 test("video generation does not silently fallback when Comfy submission fails", async () => {
   const previous = {
     COMFY_ENABLED: process.env.COMFY_ENABLED,
@@ -89,4 +98,27 @@ test("video generation does not silently fallback when Comfy submission fails", 
       process.env.COMFY_VIDEO_WORKFLOW_PATH = previous.COMFY_VIDEO_WORKFLOW_PATH;
     }
   }
+});
+
+test("comfy validation error formatting surfaces node-level details", () => {
+  const body = JSON.stringify({
+    error: {
+      type: "prompt_outputs_failed_validation",
+      message: "Prompt outputs failed validation"
+    },
+    node_errors: {
+      "37": {
+        errors: [
+          {
+            message: "Value not in list",
+            details: "unet_name: wan2.2_ti2v_5B_fp16.safetensors"
+          }
+        ]
+      }
+    }
+  });
+
+  const message = formatComfySubmitFailure(400, body);
+  assert.match(message, /prompt_outputs_failed_validation/i);
+  assert.match(message, /unet_name/i);
 });

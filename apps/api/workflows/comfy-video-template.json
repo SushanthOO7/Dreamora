@@ -17,7 +17,7 @@
   "39": {
     "class_type": "VAELoader",
     "inputs": {
-      "vae_name": "wan2.2_vae.safetensors"
+      "vae_name": "__VIDEO_VAE_NAME__"
     }
   },
   "40": {

@@ -119,6 +119,87 @@ function escapeJsonString(text: string): string {
     .replace(/\t/g, "\\t");
 }
 
+function compact(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function truncate(text: string, limit: number): string {
+  if (text.length <= limit) {
+    return text;
+  }
+  return `${text.slice(0, limit)}...`;
+}
+
+type ParsedComfyError = {
+  error?: {
+    type?: string;
+    message?: string;
+    details?: string;
+  };
+  node_errors?: Record<
+    string,
+    {
+      errors?: Array<{
+        type?: string;
+        message?: string;
+        details?: string;
+      }>;
+    }
+  >;
+};
+
+export function formatComfySubmitFailure(status: number, bodyText: string): string {
+  const body = compact(bodyText);
+  const fallback = `Comfy submit failed with ${status}: ${truncate(body, 500)}`;
+
+  let parsed: ParsedComfyError;
+  try {
+    parsed = JSON.parse(bodyText) as ParsedComfyError;
+  } catch {
+    return fallback;
+  }
+
+  const parts: string[] = [`Comfy submit failed with ${status}`];
+  const type = compact(parsed.error?.type ?? "");
+  const message = compact(parsed.error?.message ?? "");
+  const details = compact(parsed.error?.details ?? "");
+
+  const summary = [type, message].filter(Boolean).join(": ");
+  if (summary) {
+    parts.push(summary);
+  }
+  if (details) {
+    parts.push(details);
+  }
+
+  const nodeErrors = parsed.node_errors ?? {};
+  const nodeSummaries: string[] = [];
+  for (const [nodeId, nodeInfo] of Object.entries(nodeErrors)) {
+    const errors = Array.isArray(nodeInfo?.errors) ? nodeInfo.errors : [];
+    for (const entry of errors.slice(0, 2)) {
+      const entryMessage = compact(entry.message ?? entry.type ?? "validation error");
+      const entryDetails = compact(entry.details ?? "");
+      nodeSummaries.push(
+        entryDetails
+          ? `node ${nodeId}: ${entryMessage} (${entryDetails})`
+          : `node ${nodeId}: ${entryMessage}`
+      );
+      if (nodeSummaries.length >= 3) {
+        break;
+      }
+    }
+    if (nodeSummaries.length >= 3) {
+      break;
+    }
+  }
+
+  if (nodeSummaries.length > 0) {
+    parts.push(`Node errors: ${nodeSummaries.join("; ")}`);
+  }
+
+  return truncate(parts.join(". "), 900);
+}
+
 function orderedReferences(
   references: GenerationRequest["references"]
 ): Array<{ path: string; weight: number }> {
@@ -151,6 +232,9 @@ function applyWorkflowTokens(
   const batch = request.mode === "image" ? request.batchSize ?? 1 : 1;
   const seed = randomSeed();
   const safePrompt = escapeJsonString(request.prompt);
+  const videoVaeName = escapeJsonString(
+    (process.env.COMFY_VIDEO_VAE_NAME ?? "pixel_space").trim() || "pixel_space"
+  );
   const refs = orderedReferences(request.references);
 
   if (refs.length > 0) {
@@ -183,6 +267,7 @@ function applyWorkflowTokens(
     .replaceAll("__STEPS__", String(steps))
     .replaceAll("__BATCH__", String(batch))
     .replaceAll("__SEED__", String(seed))
+    .replaceAll("__VIDEO_VAE_NAME__", videoVaeName)
     .replaceAll("__RUN_ID__", runId);
 
   for (let index = 0; index < 5; index += 1) {
@@ -237,7 +322,7 @@ async function submitToComfy(
 
   if (!response.ok) {
     const body = await response.text().catch(() => "(could not read response body)");
-    throw new Error(`Comfy submit failed with ${response.status}: ${body.slice(0, 500)}`);
+    throw new Error(formatComfySubmitFailure(response.status, body));
   }
 
   const payload = (await response.json()) as { prompt_id?: string };
