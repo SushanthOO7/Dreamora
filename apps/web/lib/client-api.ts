@@ -2,6 +2,19 @@ import type { ProviderConfig, RunSummary } from "@dreamora/shared";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
+async function getJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, {
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`GET ${path} failed (${response.status}): ${detail.slice(0, 200)}`);
+  }
+
+  return response.json() as Promise<T>;
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
     method: "POST",
@@ -14,6 +27,19 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     throw new Error(`POST ${path} failed (${response.status}): ${detail.slice(0, 200)}`);
+  }
+
+  return response.json() as Promise<T>;
+}
+
+async function deleteJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, {
+    method: "DELETE"
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`DELETE ${path} failed (${response.status}): ${detail.slice(0, 200)}`);
   }
 
   return response.json() as Promise<T>;
@@ -51,6 +77,7 @@ export async function createPrompt(input: {
   type: string;
   summary: string;
   tags: string[];
+  projectId?: string;
 }) {
   return postJson("/api/prompts", input);
 }
@@ -84,8 +111,75 @@ export async function createRun(input: {
   duration: string;
   output: string;
   tokensUsed?: number;
+  projectId?: string;
+  referenceAssetIds?: string[];
 }): Promise<RunSummary> {
   return postJson<RunSummary>("/api/runs", input);
+}
+
+export type StudioAsset = {
+  id: string;
+  scope: "project" | "global";
+  projectId: string | null;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  role: "primary" | "secondary";
+  weight: number;
+  createdAt: string;
+  updatedAt: string;
+  previewUrl: string;
+};
+
+export async function uploadAsset(input: FormData): Promise<StudioAsset> {
+  const response = await fetch(`${API_URL}/api/assets/upload`, {
+    method: "POST",
+    body: input
+  });
+
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`POST /api/assets/upload failed (${response.status}): ${detail.slice(0, 200)}`);
+  }
+
+  return response.json() as Promise<StudioAsset>;
+}
+
+export async function listAssets(
+  scope: "project" | "global",
+  projectId?: string
+): Promise<StudioAsset[]> {
+  const params = new URLSearchParams();
+  params.set("scope", scope);
+  if (scope === "project" && projectId) {
+    params.set("projectId", projectId);
+  }
+
+  const payload = await getJson<{
+    scope: "project" | "global";
+    projectId: string | null;
+    assets: StudioAsset[];
+  }>(`/api/assets?${params.toString()}`);
+
+  return payload.assets;
+}
+
+export async function deleteAsset(assetId: string): Promise<{
+  deleted: boolean;
+  assetId: string;
+  deletedRunIds: string[];
+}> {
+  return deleteJson(`/api/assets/${assetId}`);
+}
+
+export async function deleteProject(projectId: string): Promise<{
+  deleted: boolean;
+  projectId: string;
+  deletedRunIds: string[];
+  deletedPromptIds: string[];
+  deletedAssetIds: string[];
+}> {
+  return deleteJson(`/api/projects/${projectId}`);
 }
 
 export async function updateRunStatus(
@@ -106,6 +200,8 @@ export type StartGenerationRequest = {
   aspectRatio: string;
   quality: "Standard" | "High" | "Ultra";
   batchSize?: number;
+  projectId?: string;
+  referenceAssetIds?: string[];
 };
 
 export type StartGenerationResponse = {
@@ -191,27 +287,11 @@ export async function startGeneration(
 export async function getGenerationStatus(
   jobId: string
 ): Promise<GenerationStatusResponse> {
-  const response = await fetch(`${API_URL}/api/generation/${jobId}`, {
-    cache: "no-store"
-  });
-
-  if (!response.ok) {
-    throw new Error(`Request failed: /api/generation/${jobId}`);
-  }
-
-  return response.json() as Promise<GenerationStatusResponse>;
+  return getJson<GenerationStatusResponse>(`/api/generation/${jobId}`);
 }
 
 export async function getGenerationPolicy(jobId: string): Promise<NonNullable<GenerationStatusResponse["policy"]>> {
-  const response = await fetch(`${API_URL}/api/generation/${jobId}/policy`, {
-    cache: "no-store"
-  });
-
-  if (!response.ok) {
-    throw new Error(`Request failed: /api/generation/${jobId}/policy`);
-  }
-
-  return response.json() as Promise<NonNullable<GenerationStatusResponse["policy"]>>;
+  return getJson<NonNullable<GenerationStatusResponse["policy"]>>(`/api/generation/${jobId}/policy`);
 }
 
 export async function getStudioSuggestions(

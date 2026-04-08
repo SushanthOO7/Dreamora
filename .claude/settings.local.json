@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(find /c/Users/Susha/OneDrive/Desktop/Projects/Dreamora/.claude/worktrees/sharp-chaum/apps/api -type f \\\\\\(-name *.md -o -name .env* \\\\\\))",
-      "Bash(find /c/Users/Susha/OneDrive/Desktop/Projects/Dreamora/.claude/worktrees/sharp-chaum -maxdepth 3 -type d ! -path */node_modules* ! -path */.next* ! -path */dist*)",
-      "Bash(npm run:*)"
-    ]
-  }
-}

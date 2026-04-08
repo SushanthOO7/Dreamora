@@ -147,6 +147,43 @@ Known limitations:
 
 ## Stage 7 - Production Hardening
 
+Status: Completed (v1 reference library slice)
+
+Delivered:
+
+- Store schema extensions:
+  - `assets[]` collection
+  - optional `projectId` linkage for prompts/runs
+  - `referenceAssetIds[]` persisted on runs
+- Local asset service in `apps/api/src/assets.ts`:
+  - validated image mime handling
+  - deterministic project/global file pathing
+  - file write/existence/delete helpers
+- Asset and cascade APIs:
+  - `POST /api/assets/upload`
+  - `GET /api/assets`
+  - `GET /api/assets/:id/file`
+  - `DELETE /api/assets/:id`
+  - `DELETE /api/projects/:id` with project-level cascade delete
+- Generation reference support:
+  - accepts `projectId` + `referenceAssetIds`
+  - validates max 5 references
+  - enforces exactly one primary among selected references
+  - enforces project/global scope compatibility
+  - passes reference metadata into Comfy workflow token substitution
+- Studio UI updates:
+  - project selector with global fallback when no project is selected
+  - reference upload controls (role/weight + image file)
+  - selection and hard-delete actions
+  - generation payload includes selected project and reference IDs
+
+Known limitations:
+
+- Reference role/weight is defined at upload time (no dedicated edit endpoint yet)
+- Hard-delete behavior is strict by design; unselect action deletes the local file and library record
+
+## Stage 8 - Production Hardening
+
 Status: Planned
 
 Planned scope:

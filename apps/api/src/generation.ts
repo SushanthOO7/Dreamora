@@ -8,6 +8,12 @@ export type GenerationRequest = {
   aspectRatio: string;
   quality: "Standard" | "High" | "Ultra";
   batchSize?: number;
+  references?: Array<{
+    id: string;
+    path: string;
+    weight: number;
+    role: "primary" | "secondary";
+  }>;
 };
 
 export type GenerationBackend = "comfy" | "simulated";
@@ -104,13 +110,35 @@ async function loadWorkflow(filePath: string): Promise<string> {
   return content;
 }
 
-function sanitizePromptForJson(text: string): string {
+function escapeJsonString(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
     .replace(/\n/g, "\\n")
     .replace(/\r/g, "\\r")
     .replace(/\t/g, "\\t");
+}
+
+function orderedReferences(
+  references: GenerationRequest["references"]
+): Array<{ path: string; weight: number }> {
+  const list = Array.isArray(references) ? references : [];
+  const primary = list
+    .filter((item) => item.role === "primary")
+    .slice(0, 1)
+    .map((item) => ({
+      path: item.path,
+      weight: Math.max(0, Math.min(1, item.weight))
+    }));
+  const secondary = list
+    .filter((item) => item.role !== "primary")
+    .slice(0, 4)
+    .map((item) => ({
+      path: item.path,
+      weight: Math.max(0, Math.min(1, item.weight))
+    }));
+
+  return [...primary, ...secondary].slice(0, 5);
 }
 
 function applyWorkflowTokens(
@@ -122,9 +150,27 @@ function applyWorkflowTokens(
   const steps = qualityToSteps(request.quality);
   const batch = request.mode === "image" ? request.batchSize ?? 1 : 1;
   const seed = randomSeed();
-  const safePrompt = sanitizePromptForJson(request.prompt);
+  const safePrompt = escapeJsonString(request.prompt);
+  const refs = orderedReferences(request.references);
 
-  return workflowText
+  if (refs.length > 0) {
+    const hasRefPathToken = workflowText.includes("__REF1_PATH__");
+    const hasRefWeightToken = workflowText.includes("__REF1_WEIGHT__");
+    if (!hasRefPathToken || !hasRefWeightToken) {
+      throw new Error(
+        "Workflow missing reference image tokens (__REF1_PATH__ / __REF1_WEIGHT__)."
+      );
+    }
+  }
+
+  const refPaths = new Array<string>(5).fill("");
+  const refWeights = new Array<string>(5).fill("0");
+  for (let index = 0; index < refs.length; index += 1) {
+    refPaths[index] = escapeJsonString(refs[index].path);
+    refWeights[index] = String(refs[index].weight);
+  }
+
+  let updated = workflowText
     .replaceAll("\"__WIDTH__\"", String(width))
     .replaceAll("\"__HEIGHT__\"", String(height))
     .replaceAll("\"__STEPS__\"", String(steps))
@@ -138,6 +184,19 @@ function applyWorkflowTokens(
     .replaceAll("__BATCH__", String(batch))
     .replaceAll("__SEED__", String(seed))
     .replaceAll("__RUN_ID__", runId);
+
+  for (let index = 0; index < 5; index += 1) {
+    const i = index + 1;
+    updated = updated
+      .replaceAll(`"__REF${i}_PATH__"`, `"${refPaths[index]}"`)
+      .replaceAll(`"__REF${i}_WEIGHT__"`, refWeights[index])
+      .replaceAll(`__REF${i}_PATH__`, refPaths[index])
+      .replaceAll(`__REF${i}_WEIGHT__`, refWeights[index]);
+  }
+
+  updated = updated.replaceAll("\"__REF_COUNT__\"", String(refs.length));
+  updated = updated.replaceAll("__REF_COUNT__", String(refs.length));
+  return updated;
 }
 
 async function submitToComfy(
@@ -335,11 +394,25 @@ export async function createComfyOrSimulatedJob(
     jobs.set(jobId, running);
     return running;
   } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (request.mode === "video") {
+      jobs.delete(jobId);
+      throw new Error(`Video generation requires successful Comfy submission: ${reason}`);
+    }
+
+    if (
+      reason.includes("Workflow missing reference image tokens") ||
+      reason.includes("Workflow JSON parse failed after token substitution")
+    ) {
+      jobs.delete(jobId);
+      throw new Error(reason);
+    }
+
     const fallback: GenerationJob = {
       ...initial,
       backend: "simulated",
       status: "queued",
-      error: error instanceof Error ? error.message : String(error)
+      error: reason
     };
     jobs.set(jobId, fallback);
     return fallback;

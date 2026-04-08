@@ -76,6 +76,8 @@ export type McpHandlers = {
     aspectRatio: string;
     quality: "Standard" | "High" | "Ultra";
     batchSize?: number;
+    projectId?: string;
+    referenceAssetIds?: string[];
   }) => Promise<{
     jobId: string;
     runId: string;
@@ -128,7 +130,12 @@ const TOOL_DEFINITIONS = [
         model: { type: "string" },
         aspectRatio: { type: "string" },
         quality: { type: "string", enum: ["Standard", "High", "Ultra"] },
-        batchSize: { type: "number" }
+        batchSize: { type: "number" },
+        projectId: { type: "string" },
+        referenceAssetIds: {
+          type: "array",
+          items: { type: "string" }
+        }
       },
       required: ["mode", "prompt", "model", "aspectRatio", "quality"]
     }
@@ -278,6 +285,14 @@ export async function handleMcpRequest(
         typeof args.batchSize === "number" && Number.isFinite(args.batchSize)
           ? Math.max(1, Math.floor(args.batchSize))
           : undefined;
+      const projectId = asString(args.projectId).trim() || undefined;
+      const referenceAssetIds = Array.isArray(args.referenceAssetIds)
+        ? args.referenceAssetIds
+            .filter((item): item is string => typeof item === "string")
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .slice(0, 5)
+        : undefined;
 
       const result = await handlers.startGeneration({
         mode: asMode(args.mode),
@@ -285,7 +300,9 @@ export async function handleMcpRequest(
         model,
         aspectRatio,
         quality,
-        batchSize
+        batchSize,
+        projectId,
+        referenceAssetIds
       });
       return success(id, result);
     }

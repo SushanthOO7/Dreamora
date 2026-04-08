@@ -1,22 +1,35 @@
 "use client";
 
-import type { PromptPreset, ProviderConfig, RunSummary } from "@dreamora/shared";
+import type {
+  ProjectSummary,
+  PromptPreset,
+  ProviderConfig,
+  RunSummary
+} from "@dreamora/shared";
 import { AnimatePresence, motion } from "framer-motion";
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
+  deleteAsset,
   deriveModelsFromProviders,
   getGenerationPlan,
   getGenerationStatus,
   getStudioSuggestions,
+  listAssets,
   scoreRun,
-  startGeneration
+  startGeneration,
+  uploadAsset
 } from "../lib/client-api";
-import type { GenerationPlan, PlanStep, ScoreResponse } from "../lib/client-api";
+import type {
+  GenerationPlan,
+  ScoreResponse,
+  StudioAsset
+} from "../lib/client-api";
 
 const imageRatios = ["1:1", "4:5", "3:4", "16:9", "9:16"];
 const videoRatios = ["16:9", "9:16"];
 const qualityOptions = ["Standard", "High", "Ultra"] as const;
 const batchOptions = ["1", "2", "4", "8"];
+const MAX_REFERENCES = 5;
 
 const workflowStages = [
   {
@@ -204,16 +217,26 @@ type StudioWorkbenchProps = {
   providers: ProviderConfig[];
   initialRuns: RunSummary[];
   promptPresets: PromptPreset[];
+  projects: ProjectSummary[];
 };
 
 export function StudioWorkbench({
   providers,
   initialRuns,
-  promptPresets
+  promptPresets,
+  projects
 }: StudioWorkbenchProps) {
   const modelGroups = useMemo(
     () => deriveModelsFromProviders(providers),
     [providers]
+  );
+  const projectOptions = useMemo(
+    () =>
+      projects.filter(
+        (project): project is ProjectSummary & { id: string } =>
+          typeof project.id === "string" && project.id.trim().length > 0
+      ),
+    [projects]
   );
 
   const [state, dispatch] = useReducer(studioReducer, {
@@ -238,6 +261,15 @@ export function StudioWorkbench({
     scoringRunId: null,
     lastScoreResult: null
   });
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [assets, setAssets] = useState<StudioAsset[]>([]);
+  const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>([]);
+  const [assetLoading, setAssetLoading] = useState(false);
+  const [assetError, setAssetError] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
+  const [uploadRole, setUploadRole] = useState<"primary" | "secondary">("secondary");
+  const [uploadWeight, setUploadWeight] = useState(0.5);
 
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
@@ -255,6 +287,148 @@ export function StudioWorkbench({
   );
 
   const ratios = state.mode === "image" ? imageRatios : videoRatios;
+  const assetScope: "project" | "global" = selectedProjectId ? "project" : "global";
+  const selectedAssets = useMemo(
+    () =>
+      selectedReferenceIds
+        .map((id) => assets.find((asset) => asset.id === id) ?? null)
+        .filter((asset): asset is StudioAsset => asset !== null),
+    [assets, selectedReferenceIds]
+  );
+  const selectedPrimaryCount = useMemo(
+    () => selectedAssets.filter((asset) => asset.role === "primary").length,
+    [selectedAssets]
+  );
+
+  const refreshAssets = useCallback(
+    async (scope: "project" | "global", projectId: string | null) => {
+      setAssetLoading(true);
+      setAssetError("");
+
+      try {
+        const nextAssets = await listAssets(scope, projectId ?? undefined);
+        if (!mountedRef.current) return;
+        setAssets(nextAssets);
+        setSelectedReferenceIds((previous) =>
+          previous.filter((id) => nextAssets.some((asset) => asset.id === id)).slice(0, MAX_REFERENCES)
+        );
+      } catch {
+        if (!mountedRef.current) return;
+        setAssetError("Could not load reference library.");
+      } finally {
+        if (mountedRef.current) {
+          setAssetLoading(false);
+        }
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    void refreshAssets(assetScope, selectedProjectId);
+  }, [assetScope, selectedProjectId, refreshAssets]);
+
+  const handleProjectScopeChange = useCallback((value: string) => {
+    setSelectedReferenceIds([]);
+    setAssetError("");
+    if (value === "__global__") {
+      setSelectedProjectId(null);
+      return;
+    }
+    setSelectedProjectId(value);
+  }, []);
+
+  async function handleUploadFile(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+
+    setUploading(true);
+    setAssetError("");
+
+    const formData = new FormData();
+    formData.set("file", file);
+    formData.set("scope", assetScope);
+    formData.set("role", uploadRole);
+    formData.set("weight", String(uploadWeight));
+    if (selectedProjectId) {
+      formData.set("projectId", selectedProjectId);
+    }
+
+    try {
+      await uploadAsset(formData);
+      if (!mountedRef.current) return;
+      await refreshAssets(assetScope, selectedProjectId);
+      dispatch({
+        type: "SET_NOTICE",
+        notice: "Reference image uploaded to the local library."
+      });
+    } catch {
+      if (!mountedRef.current) return;
+      setAssetError("Could not upload reference image.");
+    } finally {
+      if (mountedRef.current) {
+        setUploading(false);
+      }
+    }
+  }
+
+  async function handleDeleteAsset(assetId: string, reason?: string) {
+    const confirmed = window.confirm(
+      reason ??
+        "This permanently removes the image from the library and deletes it from local disk. Continue?"
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingAssetId(assetId);
+    setAssetError("");
+
+    try {
+      await deleteAsset(assetId);
+      if (!mountedRef.current) return;
+      setAssets((previous) => previous.filter((asset) => asset.id !== assetId));
+      setSelectedReferenceIds((previous) => previous.filter((id) => id !== assetId));
+      dispatch({
+        type: "SET_NOTICE",
+        notice: "Reference removed permanently from library and local disk."
+      });
+    } catch {
+      if (!mountedRef.current) return;
+      setAssetError("Could not delete reference image.");
+    } finally {
+      if (mountedRef.current) {
+        setDeletingAssetId(null);
+      }
+    }
+  }
+
+  async function handleSelectAsset(asset: StudioAsset) {
+    const alreadySelected = selectedReferenceIds.includes(asset.id);
+    if (alreadySelected) {
+      await handleDeleteAsset(
+        asset.id,
+        "Unselecting this reference permanently deletes it from local disk and library. Continue?"
+      );
+      return;
+    }
+
+    if (selectedReferenceIds.length >= MAX_REFERENCES) {
+      setAssetError(`You can select at most ${MAX_REFERENCES} references.`);
+      return;
+    }
+
+    if (asset.role === "primary" && selectedPrimaryCount >= 1) {
+      setAssetError("Only one primary reference can be selected. Remove the existing primary first.");
+      return;
+    }
+
+    setAssetError("");
+    setSelectedReferenceIds((previous) => [...previous, asset.id]);
+  }
 
   const handleMode = useCallback((nextMode: "image" | "video") => {
     const nextModels =
@@ -393,6 +567,22 @@ export function StudioWorkbench({
   }
 
   async function handleGenerate() {
+    if (selectedReferenceIds.length > MAX_REFERENCES) {
+      setAssetError(`You can select at most ${MAX_REFERENCES} references.`);
+      return;
+    }
+
+    if (selectedAssets.length !== selectedReferenceIds.length) {
+      setAssetError("Some selected references are unavailable. Refresh the library and retry.");
+      return;
+    }
+
+    if (selectedAssets.length > 0 && selectedPrimaryCount !== 1) {
+      setAssetError("Select exactly one primary reference before generation.");
+      return;
+    }
+
+    setAssetError("");
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -412,7 +602,9 @@ export function StudioWorkbench({
         model: state.selectedModel,
         aspectRatio: state.ratio,
         quality: state.quality,
-        batchSize: state.mode === "image" ? Number(state.batch) : 1
+        batchSize: state.mode === "image" ? Number(state.batch) : 1,
+        projectId: selectedProjectId ?? undefined,
+        referenceAssetIds: selectedReferenceIds
       });
 
       if (controller.signal.aborted || !mountedRef.current) return;
@@ -438,13 +630,20 @@ export function StudioWorkbench({
 
       dispatch({ type: "GENERATION_STARTED", run: provisionalRun, notice });
       await pollGeneration(started.jobId, started.runId, controller.signal);
-    } catch {
+    } catch (error) {
       if (!mountedRef.current) return;
-      dispatch({ type: "GENERATION_ERROR", error: "Could not start generation. Check API server." });
+      dispatch({
+        type: "GENERATION_ERROR",
+        error:
+          error instanceof Error && error.message
+            ? error.message
+            : "Could not start generation. Check API server."
+      });
     }
   }
 
   const displayedRuns = state.runs.slice(0, 5);
+  const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
 
   return (
     <div className="space-y-6">
@@ -523,7 +722,13 @@ export function StudioWorkbench({
 
           <button
             onClick={handleGenerate}
-            disabled={state.running || !state.selectedModel || !state.promptText.trim()}
+            disabled={
+              state.running ||
+              !state.selectedModel ||
+              !state.promptText.trim() ||
+              selectedReferenceIds.length > MAX_REFERENCES ||
+              (selectedReferenceIds.length > 0 && selectedPrimaryCount !== 1)
+            }
             className="ml-auto rounded-[20px] bg-[#d7ff1f] px-6 py-3 text-sm font-semibold text-black transition hover:brightness-95 disabled:opacity-65"
           >
             {state.running ? "Generating..." : "Generate"}
@@ -735,6 +940,134 @@ export function StudioWorkbench({
         </section>
 
         <section className="space-y-6">
+          <div className="panel rounded-[34px] p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm text-black/45">Reference library</p>
+                <h3 className="mt-1 text-xl font-semibold tracking-tight">
+                  Multi-image context
+                </h3>
+              </div>
+              <span className="rounded-full border border-black/10 bg-white px-3 py-1 text-xs text-black/60">
+                {selectedReferenceIds.length}/{MAX_REFERENCES} selected
+              </span>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <label className="block text-xs text-black/50">Scope</label>
+              <select
+                value={selectedProjectId ?? "__global__"}
+                onChange={(event) => handleProjectScopeChange(event.target.value)}
+                className="w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none"
+              >
+                <option value="__global__">Global fallback (no project selected)</option>
+                {projectOptions.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs leading-5 text-black/50">
+                When no project is selected, only global references are available.
+              </p>
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_100px_auto]">
+              <select
+                value={uploadRole}
+                onChange={(event) => setUploadRole(event.target.value === "primary" ? "primary" : "secondary")}
+                className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none"
+              >
+                <option value="primary">Upload as primary</option>
+                <option value="secondary">Upload as secondary</option>
+              </select>
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={uploadWeight}
+                onChange={(event) => {
+                  const next = Number(event.target.value);
+                  if (Number.isNaN(next)) return;
+                  setUploadWeight(Math.max(0, Math.min(1, next)));
+                }}
+                className="rounded-xl border border-black/10 bg-white px-3 py-2 text-sm outline-none"
+                aria-label="Reference weight"
+              />
+              <label className="inline-flex cursor-pointer items-center justify-center rounded-xl bg-[#d7ff1f] px-4 py-2 text-sm font-medium text-black transition hover:brightness-95">
+                {uploading ? "Uploading..." : "Upload image"}
+                <input
+                  type="file"
+                  accept="image/*"
+                  disabled={uploading}
+                  onChange={handleUploadFile}
+                  className="hidden"
+                />
+              </label>
+            </div>
+
+            {assetLoading ? (
+              <p className="mt-4 text-sm text-black/55">Loading references...</p>
+            ) : assets.length === 0 ? (
+              <p className="mt-4 text-sm text-black/55">
+                No references in this scope yet. Upload images to build context.
+              </p>
+            ) : (
+              <div className="mt-4 grid gap-3">
+                {assets.map((asset) => {
+                  const selected = selectedReferenceIds.includes(asset.id);
+                  const deleting = deletingAssetId === asset.id;
+                  const previewSrc = `${apiBaseUrl}${asset.previewUrl}`;
+                  return (
+                    <div
+                      key={asset.id}
+                      className="flex items-center gap-3 rounded-[18px] border border-black/8 bg-white px-3 py-3"
+                    >
+                      <img
+                        src={previewSrc}
+                        alt={asset.filename}
+                        className="h-14 w-14 rounded-lg border border-black/10 object-cover"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{asset.filename}</p>
+                        <p className="text-xs text-black/50">
+                          {asset.role} · w {asset.weight.toFixed(2)} · {(asset.sizeBytes / 1024).toFixed(0)} KB
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => void handleSelectAsset(asset)}
+                        disabled={deleting}
+                        className={[
+                          "rounded-full border px-3 py-1 text-xs",
+                          selected
+                            ? "border-red-200 bg-red-50 text-red-700"
+                            : "border-black/10 bg-white text-black/70"
+                        ].join(" ")}
+                      >
+                        {selected ? "Unselect + delete" : "Select"}
+                      </button>
+                      <button
+                        onClick={() => void handleDeleteAsset(asset.id)}
+                        disabled={deleting}
+                        className="rounded-full border border-black/10 bg-white px-3 py-1 text-xs text-black/70"
+                      >
+                        {deleting ? "Deleting..." : "Delete"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {selectedReferenceIds.length > 0 && selectedPrimaryCount !== 1 ? (
+              <p className="mt-3 text-xs text-red-600">
+                Exactly one selected reference must be primary.
+              </p>
+            ) : null}
+            {assetError ? <p className="mt-3 text-xs text-red-600">{assetError}</p> : null}
+          </div>
+
           <div className="panel rounded-[34px] p-6">
             <p className="text-sm text-black/45">Third-party model support</p>
             <h3 className="mt-2 text-2xl font-semibold tracking-tight">

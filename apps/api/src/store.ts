@@ -7,9 +7,9 @@ import {
   runSummaries
 } from "@dreamora/shared";
 
-const STORE_VERSION = 2;
+const STORE_VERSION = 3;
 
-type StoredProject = {
+export type StoredProject = {
   id: string;
   name: string;
   format: string;
@@ -19,18 +19,19 @@ type StoredProject = {
   updatedAt: string;
 };
 
-type StoredPrompt = {
+export type StoredPrompt = {
   id: string;
   title: string;
   engine: string;
   type: string;
   summary: string;
   tags: string[];
+  projectId?: string | null;
   createdAt: string;
   updatedAt: string;
 };
 
-type StoredRun = {
+export type StoredRun = {
   id: string;
   title: string;
   engine: string;
@@ -46,11 +47,13 @@ type StoredRun = {
   backend?: "comfy" | "simulated";
   score?: number;
   scoreNotes?: string;
+  projectId?: string | null;
+  referenceAssetIds?: string[];
   createdAt: string;
   updatedAt: string;
 };
 
-type StoredProvider = {
+export type StoredProvider = {
   id: string;
   name: string;
   category: string;
@@ -64,12 +67,39 @@ type StoredProvider = {
   updatedAt: string;
 };
 
-type StoreSchema = {
+export type StoredAsset = {
+  id: string;
+  scope: "project" | "global";
+  projectId: string | null;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  role: "primary" | "secondary";
+  weight: number;
+  filePath: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type StoreSchema = {
   version: number;
   projects: StoredProject[];
   prompts: StoredPrompt[];
   runs: StoredRun[];
   providers: StoredProvider[];
+  assets: StoredAsset[];
+};
+
+export type AssetDeletePreview = {
+  asset: StoredAsset;
+  runIdsUsingAsset: string[];
+};
+
+export type ProjectCascadePreview = {
+  project: StoredProject;
+  assets: StoredAsset[];
+  runIds: string[];
+  promptIds: string[];
 };
 
 let storeCache: StoreSchema | null = null;
@@ -110,6 +140,7 @@ function seedStore(): StoreSchema {
       type: preset.type,
       summary: preset.summary,
       tags: preset.tags,
+      projectId: null,
       createdAt: created,
       updatedAt: created
     })),
@@ -122,12 +153,17 @@ function seedStore(): StoreSchema {
       duration: run.duration,
       output: run.output,
       tokensUsed: 12000 + index * 3500,
-      promptExcerpt: index % 2 === 0 ? "studio seed image prompt" : "studio seed video prompt",
+      promptExcerpt:
+        index % 2 === 0 ? "studio seed image prompt" : "studio seed video prompt",
       aspectRatio: index % 2 === 0 ? "1:1" : "16:9",
       quality: index % 2 === 0 ? "High" : "Standard",
       batchSize: index % 2 === 0 ? 2 : 1,
       backend: "simulated",
-      createdAt: new Date(Date.now() - (index + 1) * 24 * 60 * 60 * 1000).toISOString(),
+      projectId: null,
+      referenceAssetIds: [],
+      createdAt: new Date(
+        Date.now() - (index + 1) * 24 * 60 * 60 * 1000
+      ).toISOString(),
       updatedAt: created
     })),
     providers: providerConfigs.map((provider, index) => ({
@@ -142,18 +178,44 @@ function seedStore(): StoreSchema {
       secretHint: provider.status === "Connected" ? "configured" : null,
       createdAt: created,
       updatedAt: created
-    }))
+    })),
+    assets: []
   };
 }
 
 function migrateStore(data: Record<string, unknown>): StoreSchema {
   const version = typeof data.version === "number" ? data.version : 1;
+  const migrated = data as StoreSchema;
 
   if (version < 2) {
-    data.version = STORE_VERSION;
+    migrated.version = 2;
   }
 
-  return data as StoreSchema;
+  if (typeof migrated.version !== "number") {
+    migrated.version = STORE_VERSION;
+  }
+
+  if (!Array.isArray(migrated.assets)) {
+    migrated.assets = [];
+  }
+
+  for (const prompt of migrated.prompts ?? []) {
+    if (typeof prompt.projectId === "undefined") {
+      prompt.projectId = null;
+    }
+  }
+
+  for (const run of migrated.runs ?? []) {
+    if (typeof run.projectId === "undefined") {
+      run.projectId = null;
+    }
+    if (!Array.isArray(run.referenceAssetIds)) {
+      run.referenceAssetIds = [];
+    }
+  }
+
+  migrated.version = STORE_VERSION;
+  return migrated;
 }
 
 async function writeStore(data: StoreSchema): Promise<void> {
@@ -250,11 +312,13 @@ export async function createPrompt(input: {
   type: string;
   summary: string;
   tags: string[];
+  projectId?: string | null;
 }): Promise<StoredPrompt> {
   const store = getStore();
   const record: StoredPrompt = {
     id: crypto.randomUUID(),
     ...input,
+    projectId: input.projectId ?? null,
     createdAt: nowIso(),
     updatedAt: nowIso()
   };
@@ -276,11 +340,15 @@ export async function createRun(input: {
   quality?: "Standard" | "High" | "Ultra";
   batchSize?: number;
   backend?: "comfy" | "simulated";
+  projectId?: string | null;
+  referenceAssetIds?: string[];
 }): Promise<StoredRun> {
   const store = getStore();
   const record: StoredRun = {
     id: crypto.randomUUID(),
     ...input,
+    projectId: input.projectId ?? null,
+    referenceAssetIds: input.referenceAssetIds ?? [],
     createdAt: nowIso(),
     updatedAt: nowIso()
   };
@@ -309,6 +377,135 @@ export async function createProvider(input: {
   store.providers.push(record);
   await persist();
   return record;
+}
+
+export async function createAsset(input: {
+  id?: string;
+  scope: "project" | "global";
+  projectId: string | null;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  role: "primary" | "secondary";
+  weight: number;
+  filePath: string;
+}): Promise<StoredAsset> {
+  const store = getStore();
+  const { id, ...rest } = input;
+  const record: StoredAsset = {
+    id: id ?? crypto.randomUUID(),
+    ...rest,
+    createdAt: nowIso(),
+    updatedAt: nowIso()
+  };
+  store.assets.unshift(record);
+  await persist();
+  return record;
+}
+
+export function listAssets(scope: "project" | "global", projectId?: string): StoredAsset[] {
+  const store = getStore();
+  return store.assets.filter((asset) => {
+    if (asset.scope !== scope) {
+      return false;
+    }
+    if (scope === "project") {
+      return asset.projectId === (projectId ?? null);
+    }
+    return asset.projectId === null;
+  });
+}
+
+export function getAssetById(assetId: string): StoredAsset | null {
+  const store = getStore();
+  return store.assets.find((asset) => asset.id === assetId) ?? null;
+}
+
+export function getAssetDeletePreview(assetId: string): AssetDeletePreview | null {
+  const store = getStore();
+  const asset = store.assets.find((item) => item.id === assetId);
+  if (!asset) {
+    return null;
+  }
+
+  const runIdsUsingAsset = store.runs
+    .filter((run) => run.referenceAssetIds?.includes(assetId))
+    .map((run) => run.id);
+
+  return {
+    asset,
+    runIdsUsingAsset
+  };
+}
+
+export async function commitAssetDelete(assetId: string): Promise<{
+  assetId: string;
+  deletedRunIds: string[];
+}> {
+  const store = getStore();
+  const preview = getAssetDeletePreview(assetId);
+  if (!preview) {
+    throw new Error("Asset not found");
+  }
+
+  store.assets = store.assets.filter((asset) => asset.id !== assetId);
+  store.runs = store.runs.filter((run) => !preview.runIdsUsingAsset.includes(run.id));
+  await persist();
+
+  return {
+    assetId,
+    deletedRunIds: preview.runIdsUsingAsset
+  };
+}
+
+export function getProjectCascadePreview(projectId: string): ProjectCascadePreview | null {
+  const store = getStore();
+  const project = store.projects.find((item) => item.id === projectId);
+  if (!project) {
+    return null;
+  }
+
+  const assets = store.assets.filter((asset) => asset.projectId === projectId);
+  const runIds = store.runs
+    .filter((run) => run.projectId === projectId)
+    .map((run) => run.id);
+  const promptIds = store.prompts
+    .filter((prompt) => prompt.projectId === projectId)
+    .map((prompt) => prompt.id);
+
+  return {
+    project,
+    assets,
+    runIds,
+    promptIds
+  };
+}
+
+export async function commitProjectCascadeDelete(projectId: string): Promise<{
+  projectId: string;
+  deletedRunIds: string[];
+  deletedPromptIds: string[];
+  deletedAssetIds: string[];
+}> {
+  const store = getStore();
+  const preview = getProjectCascadePreview(projectId);
+  if (!preview) {
+    throw new Error("Project not found");
+  }
+
+  store.projects = store.projects.filter((project) => project.id !== projectId);
+  store.assets = store.assets.filter((asset) => asset.projectId !== projectId);
+  store.runs = store.runs.filter((run) => run.projectId !== projectId);
+  store.prompts = store.prompts.filter((prompt) => prompt.projectId !== projectId);
+
+  await persist();
+
+  return {
+    projectId,
+    deletedRunIds: preview.runIds,
+    deletedPromptIds: preview.promptIds,
+    deletedAssetIds: preview.assets.map((asset) => asset.id)
+  };
 }
 
 export async function updateProviderCredentials(
@@ -356,7 +553,19 @@ export async function updateRunFields(
   fields: Partial<
     Pick<
       StoredRun,
-      "status" | "duration" | "output" | "tokensUsed" | "backend" | "promptExcerpt" | "aspectRatio" | "quality" | "batchSize" | "score" | "scoreNotes"
+      | "status"
+      | "duration"
+      | "output"
+      | "tokensUsed"
+      | "backend"
+      | "promptExcerpt"
+      | "aspectRatio"
+      | "quality"
+      | "batchSize"
+      | "score"
+      | "scoreNotes"
+      | "projectId"
+      | "referenceAssetIds"
     >
   >
 ): Promise<StoredRun> {
@@ -368,7 +577,14 @@ export async function updateRunFields(
   }
 
   const updatable: Array<keyof typeof fields> = [
-    "status", "duration", "output", "backend", "promptExcerpt", "aspectRatio", "quality", "scoreNotes"
+    "status",
+    "duration",
+    "output",
+    "backend",
+    "promptExcerpt",
+    "aspectRatio",
+    "quality",
+    "scoreNotes"
   ];
 
   for (const key of updatable) {
@@ -387,6 +603,14 @@ export async function updateRunFields(
 
   if (typeof fields.score === "number") {
     run.score = Math.max(1, Math.min(5, Math.round(fields.score)));
+  }
+
+  if (Array.isArray(fields.referenceAssetIds)) {
+    run.referenceAssetIds = fields.referenceAssetIds.slice(0, 5);
+  }
+
+  if (typeof fields.projectId === "string" || fields.projectId === null) {
+    run.projectId = fields.projectId;
   }
 
   run.updatedAt = nowIso();

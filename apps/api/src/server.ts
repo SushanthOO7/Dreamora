@@ -1,5 +1,8 @@
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
+import type { MultipartFile } from "@fastify/multipart";
 import Fastify from "fastify";
+import { readFile as readLocalFile } from "node:fs/promises";
 import { dashboardResponse, modelRecommendations, orchestrationStrategy } from "@dreamora/shared";
 import "./env.js";
 import {
@@ -22,12 +25,28 @@ import {
 } from "./scoring.js";
 import { getSemanticIndex } from "./semantic.js";
 import {
+  deleteAssetFile,
+  ensureFileExists,
+  resolveAssetPath,
+  safeExtension,
+  validateImageMime,
+  writeAssetFile
+} from "./assets.js";
+import {
+  commitAssetDelete,
+  commitProjectCascadeDelete,
+  createAsset,
   createProject,
   createPrompt,
   createProvider,
   createRun,
+  getAssetById,
+  getAssetDeletePreview,
+  getProjectCascadePreview,
   getStore,
   initStore,
+  listAssets,
+  type StoredAsset,
   updateProviderCredentials,
   updateRunFields,
   updateRunStatus
@@ -39,6 +58,12 @@ const app = Fastify({
 
 await app.register(cors, {
   origin: process.env.CORS_ORIGIN ?? true
+});
+await app.register(multipart, {
+  limits: {
+    files: 1,
+    fileSize: 10 * 1024 * 1024
+  }
 });
 
 app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
@@ -117,6 +142,45 @@ const VALID_MODES = new Set(["image", "video"]);
 const VALID_QUALITIES = new Set(["Standard", "High", "Ultra"]);
 const MAX_BATCH = 8;
 const MIN_BATCH = 1;
+const MAX_REFERENCES = 5;
+
+function toAssetScope(raw: string): "project" | "global" | null {
+  if (raw === "project") {
+    return "project";
+  }
+  if (raw === "global") {
+    return "global";
+  }
+  return null;
+}
+
+function toAssetRole(raw: string): "primary" | "secondary" {
+  return raw === "primary" ? "primary" : "secondary";
+}
+
+function normalizeWeight(raw: string | number | undefined, fallback = 0.5): number {
+  const numeric = typeof raw === "number" ? raw : Number(raw ?? fallback);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.min(1, Math.max(0.1, Number(numeric.toFixed(2))));
+}
+
+function toPublicAsset(asset: StoredAsset) {
+  return {
+    id: asset.id,
+    scope: asset.scope,
+    projectId: asset.projectId,
+    filename: asset.filename,
+    mimeType: asset.mimeType,
+    sizeBytes: asset.sizeBytes,
+    role: asset.role,
+    weight: asset.weight,
+    createdAt: asset.createdAt,
+    updatedAt: asset.updatedAt,
+    previewUrl: `/api/assets/${asset.id}/file`
+  };
+}
 
 app.get("/health", async () => ({
   ok: true
@@ -183,6 +247,47 @@ app.post<{
   return project;
 });
 
+app.delete<{
+  Params: { id: string };
+}>("/api/projects/:id", async (request, reply) => {
+  const preview = getProjectCascadePreview(request.params.id);
+  if (!preview) {
+    reply.code(404);
+    return { error: "Project not found" };
+  }
+
+  try {
+    for (const asset of preview.assets) {
+      await ensureFileExists(asset.filePath);
+    }
+  } catch {
+    reply.code(500);
+    return {
+      error: "Project delete aborted because one or more asset files are missing."
+    };
+  }
+
+  try {
+    for (const asset of preview.assets) {
+      await deleteAssetFile(asset.filePath);
+    }
+  } catch (error) {
+    reply.code(500);
+    return {
+      error:
+        error instanceof Error
+          ? `Project delete aborted during file deletion: ${error.message}`
+          : "Project delete aborted during file deletion."
+    };
+  }
+
+  const result = await commitProjectCascadeDelete(request.params.id);
+  return {
+    deleted: true,
+    ...result
+  };
+});
+
 app.get("/api/prompts", async () => {
   const { prompts } = getStore();
   return prompts;
@@ -195,14 +300,17 @@ app.post<{
     type: string;
     summary: string;
     tags: string[];
+    projectId?: string;
   };
 }>("/api/prompts", async (request, reply) => {
+  const projectId = cleanText(request.body.projectId);
   const payload = {
     title: cleanText(request.body.title),
     engine: cleanText(request.body.engine),
     type: cleanText(request.body.type),
     summary: cleanText(request.body.summary),
-    tags: Array.isArray(request.body.tags) ? request.body.tags : []
+    tags: Array.isArray(request.body.tags) ? request.body.tags : [],
+    projectId: projectId || null
   };
 
   const error = requireFields([
@@ -215,6 +323,14 @@ app.post<{
   if (error) {
     reply.code(400);
     return { error };
+  }
+
+  if (payload.projectId) {
+    const exists = getStore().projects.some((project) => project.id === payload.projectId);
+    if (!exists) {
+      reply.code(404);
+      return { error: "Project not found for prompt" };
+    }
   }
 
   const prompt = await createPrompt(payload);
@@ -236,15 +352,23 @@ app.post<{
     duration: string;
     output: string;
     tokensUsed?: number;
+    projectId?: string;
+    referenceAssetIds?: string[];
   };
 }>("/api/runs", async (request, reply) => {
+  const projectId = cleanText(request.body.projectId);
+  const referenceAssetIds = Array.isArray(request.body.referenceAssetIds)
+    ? request.body.referenceAssetIds.filter((value): value is string => typeof value === "string").slice(0, MAX_REFERENCES)
+    : [];
   const payload = {
     ...request.body,
     title: cleanText(request.body.title),
     engine: cleanText(request.body.engine),
     status: cleanText(request.body.status),
     duration: cleanText(request.body.duration),
-    output: cleanText(request.body.output)
+    output: cleanText(request.body.output),
+    projectId: projectId || null,
+    referenceAssetIds
   };
 
   if (!VALID_MODES.has(payload.mode)) {
@@ -263,6 +387,28 @@ app.post<{
   if (error) {
     reply.code(400);
     return { error };
+  }
+
+  if (payload.projectId) {
+    const exists = getStore().projects.some((project) => project.id === payload.projectId);
+    if (!exists) {
+      reply.code(404);
+      return { error: "Project not found for run" };
+    }
+  }
+
+  if (payload.referenceAssetIds.length > 0) {
+    try {
+      resolveReferenceAssetsForGeneration(payload.projectId ?? null, payload.referenceAssetIds);
+    } catch (validationError) {
+      reply.code(400);
+      return {
+        error:
+          validationError instanceof Error
+            ? validationError.message
+            : "Invalid reference assets for run"
+      };
+    }
   }
 
   const run = await createRun({
@@ -371,6 +517,189 @@ app.patch<{
       error: "Provider not found"
     };
   }
+});
+
+app.post("/api/assets/upload", async (request, reply) => {
+  const fields: Record<string, string> = {};
+  let filePart: MultipartFile | null = null;
+
+  for await (const part of request.parts()) {
+    if (part.type === "file") {
+      if (filePart) {
+        reply.code(400);
+        return { error: "Only one file is allowed per upload request." };
+      }
+      filePart = part;
+      continue;
+    }
+    fields[part.fieldname] = String(part.value ?? "");
+  }
+
+  if (!filePart) {
+    reply.code(400);
+    return { error: "file is required" };
+  }
+
+  const scope = toAssetScope(cleanText(fields.scope));
+  if (!scope) {
+    reply.code(400);
+    return { error: "scope must be 'project' or 'global'" };
+  }
+
+  const projectId = cleanText(fields.projectId) || null;
+  if (scope === "project" && !projectId) {
+    reply.code(400);
+    return { error: "projectId is required when scope is 'project'" };
+  }
+
+  if (scope === "project") {
+    const exists = getStore().projects.some((project) => project.id === projectId);
+    if (!exists) {
+      reply.code(404);
+      return { error: "Project not found for project-scoped asset" };
+    }
+  }
+
+  if (!validateImageMime(filePart.mimetype)) {
+    reply.code(400);
+    return { error: `Unsupported file type: ${filePart.mimetype}` };
+  }
+
+  const chunks: Buffer[] = [];
+  for await (const chunk of filePart.file) {
+    chunks.push(Buffer.from(chunk));
+  }
+  const content = Buffer.concat(chunks);
+  if (content.byteLength === 0) {
+    reply.code(400);
+    return { error: "Uploaded file is empty" };
+  }
+
+  const role = toAssetRole(cleanText(fields.role));
+  const weight = normalizeWeight(fields.weight, role === "primary" ? 1 : 0.5);
+  const assetId = crypto.randomUUID();
+  const ext = safeExtension(filePart.filename, filePart.mimetype);
+  const filePath = resolveAssetPath({
+    scope,
+    projectId: scope === "project" ? projectId : null,
+    assetId,
+    extension: ext
+  });
+
+  try {
+    await writeAssetFile(filePath, content);
+  } catch (error) {
+    reply.code(500);
+    return {
+      error:
+        error instanceof Error
+          ? `Could not persist uploaded asset file: ${error.message}`
+          : "Could not persist uploaded asset file"
+    };
+  }
+
+  try {
+    const asset = await createAsset({
+      id: assetId,
+      scope,
+      projectId: scope === "project" ? projectId : null,
+      filename: filePart.filename,
+      mimeType: filePart.mimetype,
+      sizeBytes: content.byteLength,
+      role,
+      weight,
+      filePath
+    });
+    reply.code(201);
+    return toPublicAsset(asset);
+  } catch (error) {
+    await deleteAssetFile(filePath).catch(() => undefined);
+    reply.code(500);
+    return {
+      error:
+        error instanceof Error
+          ? `Could not persist uploaded asset metadata: ${error.message}`
+          : "Could not persist uploaded asset metadata"
+    };
+  }
+});
+
+app.get<{
+  Querystring: { scope?: string; projectId?: string };
+}>("/api/assets", async (request, reply) => {
+  const scope = toAssetScope(cleanText(request.query.scope) || "global");
+  if (!scope) {
+    reply.code(400);
+    return { error: "scope must be 'project' or 'global'" };
+  }
+
+  const projectId = cleanText(request.query.projectId) || undefined;
+  if (scope === "project" && !projectId) {
+    reply.code(400);
+    return { error: "projectId is required for project-scoped listing" };
+  }
+
+  const assets = listAssets(scope, projectId).map((asset) => toPublicAsset(asset));
+
+  return {
+    scope,
+    projectId: projectId ?? null,
+    assets
+  };
+});
+
+app.get<{
+  Params: { id: string };
+}>("/api/assets/:id/file", async (request, reply) => {
+  const asset = getAssetById(request.params.id);
+  if (!asset) {
+    reply.code(404);
+    return { error: "Asset not found" };
+  }
+
+  try {
+    const binary = await readLocalFile(asset.filePath);
+    reply.header("Content-Type", asset.mimeType);
+    return reply.send(binary);
+  } catch {
+    reply.code(404);
+    return { error: "Asset file not found on disk" };
+  }
+});
+
+app.delete<{
+  Params: { id: string };
+}>("/api/assets/:id", async (request, reply) => {
+  const preview = getAssetDeletePreview(request.params.id);
+  if (!preview) {
+    reply.code(404);
+    return { error: "Asset not found" };
+  }
+
+  try {
+    await ensureFileExists(preview.asset.filePath);
+  } catch {
+    reply.code(500);
+    return { error: "Asset delete aborted because file is missing on disk." };
+  }
+
+  try {
+    await deleteAssetFile(preview.asset.filePath);
+  } catch (error) {
+    reply.code(500);
+    return {
+      error:
+        error instanceof Error
+          ? `Asset delete failed during file deletion: ${error.message}`
+          : "Asset delete failed during file deletion."
+    };
+  }
+
+  const result = await commitAssetDelete(request.params.id);
+  return {
+    deleted: true,
+    ...result
+  };
 });
 
 app.get("/api/reporting/usage", async () => {
@@ -636,6 +965,66 @@ function getRegenerationPolicyDecision(jobId: string) {
   });
 }
 
+function resolveReferenceAssetsForGeneration(
+  projectId: string | null,
+  referenceAssetIds: string[]
+): Array<{ id: string; path: string; weight: number; role: "primary" | "secondary" }> {
+  if (referenceAssetIds.length === 0) {
+    return [];
+  }
+  if (referenceAssetIds.length > MAX_REFERENCES) {
+    throw new Error(`At most ${MAX_REFERENCES} reference images are allowed.`);
+  }
+
+  const uniqueIds = [...new Set(referenceAssetIds)];
+  if (uniqueIds.length !== referenceAssetIds.length) {
+    throw new Error("Duplicate reference asset IDs are not allowed.");
+  }
+
+  const assets = uniqueIds.map((id) => {
+    const asset = getAssetById(id);
+    if (!asset) {
+      throw new Error(`Reference asset not found: ${id}`);
+    }
+    return asset;
+  });
+
+  if (projectId) {
+    for (const asset of assets) {
+      if (asset.scope !== "project" || asset.projectId !== projectId) {
+        throw new Error("All references must belong to the selected project.");
+      }
+    }
+  } else {
+    for (const asset of assets) {
+      if (asset.scope !== "global" || asset.projectId !== null) {
+        throw new Error(
+          "When no project is selected, references must come from global assets."
+        );
+      }
+    }
+  }
+
+  const primaryCount = assets.filter((asset) => asset.role === "primary").length;
+  if (primaryCount !== 1) {
+    throw new Error(
+      "Exactly one selected reference must be marked as primary."
+    );
+  }
+
+  const ordered = assets.sort((left, right) => {
+    if (left.role === right.role) return 0;
+    return left.role === "primary" ? -1 : 1;
+  });
+
+  return ordered.map((asset) => ({
+    id: asset.id,
+    path: asset.filePath,
+    weight: asset.weight,
+    role: asset.role
+  }));
+}
+
 // --- Stage 6: Semantic search endpoint ---
 app.get<{
   Querystring: { query: string; source?: "prompt" | "run"; limit?: string };
@@ -815,6 +1204,8 @@ app.post<{
     aspectRatio: string;
     quality: "Standard" | "High" | "Ultra";
     batchSize?: number;
+    projectId?: string;
+    referenceAssetIds?: string[];
   };
 }>("/api/generation/start", async (request, reply) => {
   const mode = request.body.mode;
@@ -823,6 +1214,14 @@ app.post<{
   const normalizedModel = normalizeModelName(model);
   const aspectRatio = cleanText(request.body.aspectRatio);
   const quality = request.body.quality;
+  const projectId = cleanText(request.body.projectId) || null;
+  const referenceAssetIds = Array.isArray(request.body.referenceAssetIds)
+    ? request.body.referenceAssetIds
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => cleanText(value))
+        .filter(Boolean)
+        .slice(0, MAX_REFERENCES)
+    : [];
   const rawBatch = request.body.batchSize ?? 1;
   const batchSize = Math.max(MIN_BATCH, Math.min(MAX_BATCH, Math.floor(rawBatch)));
 
@@ -848,6 +1247,32 @@ app.post<{
     return { error };
   }
 
+  if (projectId) {
+    const exists = getStore().projects.some((project) => project.id === projectId);
+    if (!exists) {
+      reply.code(404);
+      return { error: "Selected project not found." };
+    }
+  }
+
+  let references: Array<{
+    id: string;
+    path: string;
+    weight: number;
+    role: "primary" | "secondary";
+  }> = [];
+  try {
+    references = resolveReferenceAssetsForGeneration(projectId, referenceAssetIds);
+  } catch (validationError) {
+    reply.code(400);
+    return {
+      error:
+        validationError instanceof Error
+          ? validationError.message
+          : "Invalid reference asset selection."
+    };
+  }
+
   const run = await createRun({
     title:
       mode === "image"
@@ -862,17 +1287,36 @@ app.post<{
     promptExcerpt: prompt.slice(0, 280),
     aspectRatio,
     quality,
-    batchSize: mode === "image" ? batchSize : 1
+    batchSize: mode === "image" ? batchSize : 1,
+    projectId,
+    referenceAssetIds: references.map((item) => item.id)
   });
 
-  const job = await createComfyOrSimulatedJob(run.id, {
-    mode,
-    prompt,
-    model: normalizedModel,
-    aspectRatio,
-    quality,
-    batchSize
-  });
+  let job: Awaited<ReturnType<typeof createComfyOrSimulatedJob>>;
+  try {
+    job = await createComfyOrSimulatedJob(run.id, {
+      mode,
+      prompt,
+      model: normalizedModel,
+      aspectRatio,
+      quality,
+      batchSize,
+      references
+    });
+  } catch (error) {
+    await updateRunFields(run.id, {
+      status: "Failed",
+      duration: "Failed",
+      output: error instanceof Error ? error.message : "Generation request invalid"
+    });
+    reply.code(400);
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Generation request invalid"
+    };
+  }
 
   if (job.backend === "comfy" && job.status === "running") {
     await updateRunStatus(run.id, "Running");
@@ -1019,6 +1463,8 @@ app.post<{
       aspectRatio: string;
       quality: "Standard" | "High" | "Ultra";
       batchSize?: number;
+      projectId?: string;
+      referenceAssetIds?: string[];
     }) => {
       const injected = await app.inject({
         method: "POST",

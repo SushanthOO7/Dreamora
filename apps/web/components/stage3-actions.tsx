@@ -1,12 +1,13 @@
 "use client";
 
-import type { ProviderConfig } from "@dreamora/shared";
+import type { ProjectSummary, ProviderConfig } from "@dreamora/shared";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import {
   createProject,
   createPrompt,
   createProvider,
+  deleteProject,
   updateProviderCredentials
 } from "../lib/client-api";
 
@@ -82,6 +83,76 @@ export function CreateProjectForm() {
         <FormMessage error={error} success={success} />
       </div>
     </form>
+  );
+}
+
+export function ProjectLibraryList({
+  projects
+}: {
+  projects: ProjectSummary[];
+}) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  return (
+    <div className="grid gap-5 xl:grid-cols-3">
+      {projects.map((project) => (
+        <article key={project.id ?? project.name} className="panel rounded-[30px] px-6 py-5">
+          <p className="text-xs uppercase tracking-[0.22em] text-black/35">{project.status}</p>
+          <h2 className="mt-3 text-2xl font-semibold tracking-tight">{project.name}</h2>
+          <p className="mt-3 text-sm leading-6 text-black/58">{project.summary}</p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <span className="rounded-full border border-black/8 bg-white/80 px-3 py-1 text-xs text-black/58">
+              {project.format}
+            </span>
+            <span className="rounded-full border border-black/8 bg-white/80 px-3 py-1 text-xs text-black/58">
+              Updated {project.updatedAt}
+            </span>
+          </div>
+          <div className="mt-4 flex items-center gap-3">
+            {project.id ? (
+              <button
+                disabled={isPending}
+                onClick={() => {
+                  const confirmed = window.confirm(
+                    "Delete this project and permanently remove all project references from local disk?"
+                  );
+                  if (!confirmed) {
+                    return;
+                  }
+
+                  setError("");
+                  setSuccess("");
+                  startTransition(async () => {
+                    try {
+                      const result = await deleteProject(project.id!);
+                      setSuccess(
+                        `Deleted project (${result.deletedAssetIds.length} assets, ${result.deletedRunIds.length} runs).`
+                      );
+                      router.refresh();
+                    } catch {
+                      setError("Could not delete project.");
+                    }
+                  });
+                }}
+                className="rounded-full border border-red-200 bg-red-50 px-4 py-2 text-xs font-medium text-red-700 disabled:opacity-60"
+              >
+                {isPending ? "Deleting..." : "Delete project"}
+              </button>
+            ) : (
+              <p className="text-xs text-black/50">
+                Missing project ID; delete is unavailable for this item.
+              </p>
+            )}
+          </div>
+        </article>
+      ))}
+
+      {error ? <p className="xl:col-span-3 text-sm text-red-600">{error}</p> : null}
+      {success ? <p className="xl:col-span-3 text-sm text-emerald-700">{success}</p> : null}
+    </div>
   );
 }
 

@@ -18,10 +18,11 @@ Implemented:
 - Stage 4: generation orchestration (ComfyUI + fallback)
 - Stage 5 (v1): prompt memory and settings recommendation
 - Stage 6: semantic retrieval, planner, policies, MCP orchestration
+- Stage 7 (v1): reference library with project/global scope, up to 5 context images, and hard-delete behavior
 
 Planned and left:
 
-- Stage 7: production hardening (auth, encrypted secret vault, queue workers, observability, multi-user support)
+- Stage 8: production hardening (auth, encrypted secret vault, queue workers, observability, multi-user support)
 
 Full checklist: `docs/implementation-status.md`
 
@@ -73,6 +74,11 @@ Studio:
   - quality
   - batch size (image only)
 - Prompt editor with preset chips
+- Reference library panel:
+  - project-scoped or global fallback assets
+  - upload with role/weight metadata
+  - select up to 5 references
+  - strict unselect/delete flow that permanently removes local files
 - Animated workflow execution panel (Framer Motion)
 - Run polling and status cards
 - Backend notice for Comfy or fallback mode
@@ -108,6 +114,21 @@ Stage 6 orchestration:
 - Generation status now includes policy decision metadata
 - MCP-compatible JSON-RPC orchestration endpoint (`POST /api/mcp`)
 
+Stage 7 reference library (v1):
+
+- Project/global scoped reference image library persisted on local disk
+- `POST /api/assets/upload`, `GET /api/assets`, `GET /api/assets/:id/file`, `DELETE /api/assets/:id`
+- `DELETE /api/projects/:id` cascades through related project assets/runs/prompts
+- Generation now accepts `projectId` + `referenceAssetIds` (up to 5)
+- Workflow token expansion for reference-aware templates:
+  - `__REF_COUNT__`
+  - `__REF1_PATH__ ... __REF5_PATH__`
+  - `__REF1_WEIGHT__ ... __REF5_WEIGHT__`
+- Enforced at generation time:
+  - max 5 references
+  - exactly one primary reference
+  - project/global scope consistency
+
 ## API Endpoints
 
 Health and runtime:
@@ -126,6 +147,7 @@ Core entities:
 
 - `GET /api/projects`
 - `POST /api/projects`
+- `DELETE /api/projects/:id`
 - `GET /api/prompts`
 - `POST /api/prompts`
 - `GET /api/runs`
@@ -135,6 +157,10 @@ Core entities:
 - `POST /api/providers`
 - `PATCH /api/providers/:id/credentials`
 - `GET /api/reporting/usage`
+- `POST /api/assets/upload`
+- `GET /api/assets`
+- `GET /api/assets/:id/file`
+- `DELETE /api/assets/:id`
 
 Studio generation:
 
@@ -232,6 +258,9 @@ Template tokens supported by Dreamora:
 - `__STEPS__`
 - `__BATCH__`
 - `__RUN_ID__`
+- `__REF_COUNT__`
+- `__REF1_PATH__` ... `__REF5_PATH__`
+- `__REF1_WEIGHT__` ... `__REF5_WEIGHT__`
 
 Files:
 
