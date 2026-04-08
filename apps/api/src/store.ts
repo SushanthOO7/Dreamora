@@ -7,6 +7,8 @@ import {
   runSummaries
 } from "@dreamora/shared";
 
+const STORE_VERSION = 2;
+
 type StoredProject = {
   id: string;
   name: string;
@@ -42,6 +44,8 @@ type StoredRun = {
   quality?: "Standard" | "High" | "Ultra";
   batchSize?: number;
   backend?: "comfy" | "simulated";
+  score?: number;
+  scoreNotes?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -61,6 +65,7 @@ type StoredProvider = {
 };
 
 type StoreSchema = {
+  version: number;
   projects: StoredProject[];
   prompts: StoredPrompt[];
   runs: StoredRun[];
@@ -69,6 +74,7 @@ type StoreSchema = {
 
 let storeCache: StoreSchema | null = null;
 let writeQueue: Promise<void> = Promise.resolve();
+let initPromise: Promise<void> | null = null;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -87,6 +93,7 @@ function seedStore(): StoreSchema {
   const created = nowIso();
 
   return {
+    version: STORE_VERSION,
     projects: projectSummaries.map((project, index) => ({
       id: `project_${index + 1}`,
       name: project.name,
@@ -139,6 +146,16 @@ function seedStore(): StoreSchema {
   };
 }
 
+function migrateStore(data: Record<string, unknown>): StoreSchema {
+  const version = typeof data.version === "number" ? data.version : 1;
+
+  if (version < 2) {
+    data.version = STORE_VERSION;
+  }
+
+  return data as StoreSchema;
+}
+
 async function writeStore(data: StoreSchema): Promise<void> {
   const dataPath = resolveDataPath();
   await mkdir(path.dirname(dataPath), { recursive: true });
@@ -150,14 +167,43 @@ export async function initStore(): Promise<void> {
     return;
   }
 
-  const dataPath = resolveDataPath();
-  try {
-    const raw = await readFile(dataPath, "utf8");
-    storeCache = JSON.parse(raw) as StoreSchema;
-  } catch {
-    storeCache = seedStore();
-    await writeStore(storeCache);
+  if (initPromise) {
+    return initPromise;
   }
+
+  initPromise = (async () => {
+    if (storeCache) {
+      return;
+    }
+
+    const dataPath = resolveDataPath();
+    try {
+      const raw = await readFile(dataPath, "utf8");
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      storeCache = migrateStore(parsed);
+
+      if ((parsed.version as number) < STORE_VERSION) {
+        await writeStore(storeCache);
+      }
+    } catch (error) {
+      const isNotFound =
+        error instanceof Error &&
+        "code" in error &&
+        (error as NodeJS.ErrnoException).code === "ENOENT";
+
+      if (!isNotFound) {
+        console.warn(
+          "Could not read existing store, creating fresh:",
+          error instanceof Error ? error.message : error
+        );
+      }
+
+      storeCache = seedStore();
+      await writeStore(storeCache);
+    }
+  })();
+
+  await initPromise;
 }
 
 async function persist(): Promise<void> {
@@ -310,7 +356,7 @@ export async function updateRunFields(
   fields: Partial<
     Pick<
       StoredRun,
-      "status" | "duration" | "output" | "tokensUsed" | "backend" | "promptExcerpt" | "aspectRatio" | "quality" | "batchSize"
+      "status" | "duration" | "output" | "tokensUsed" | "backend" | "promptExcerpt" | "aspectRatio" | "quality" | "batchSize" | "score" | "scoreNotes"
     >
   >
 ): Promise<StoredRun> {
@@ -321,40 +367,26 @@ export async function updateRunFields(
     throw new Error("Run not found");
   }
 
-  if (typeof fields.status === "string") {
-    run.status = fields.status;
-  }
+  const updatable: Array<keyof typeof fields> = [
+    "status", "duration", "output", "backend", "promptExcerpt", "aspectRatio", "quality", "scoreNotes"
+  ];
 
-  if (typeof fields.duration === "string") {
-    run.duration = fields.duration;
-  }
-
-  if (typeof fields.output === "string") {
-    run.output = fields.output;
+  for (const key of updatable) {
+    if (typeof fields[key] === "string") {
+      (run as Record<string, unknown>)[key] = fields[key];
+    }
   }
 
   if (typeof fields.tokensUsed === "number") {
     run.tokensUsed = fields.tokensUsed;
   }
 
-  if (typeof fields.backend === "string") {
-    run.backend = fields.backend;
-  }
-
-  if (typeof fields.promptExcerpt === "string") {
-    run.promptExcerpt = fields.promptExcerpt;
-  }
-
-  if (typeof fields.aspectRatio === "string") {
-    run.aspectRatio = fields.aspectRatio;
-  }
-
-  if (typeof fields.quality === "string") {
-    run.quality = fields.quality;
-  }
-
   if (typeof fields.batchSize === "number") {
     run.batchSize = fields.batchSize;
+  }
+
+  if (typeof fields.score === "number") {
+    run.score = Math.max(1, Math.min(5, Math.round(fields.score)));
   }
 
   run.updatedAt = nowIso();

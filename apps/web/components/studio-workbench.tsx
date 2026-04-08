@@ -2,13 +2,16 @@
 
 import type { PromptPreset, ProviderConfig, RunSummary } from "@dreamora/shared";
 import { AnimatePresence, motion } from "framer-motion";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import {
   deriveModelsFromProviders,
+  getGenerationPlan,
   getGenerationStatus,
   getStudioSuggestions,
+  scoreRun,
   startGeneration
 } from "../lib/client-api";
+import type { GenerationPlan, PlanStep, ScoreResponse } from "../lib/client-api";
 
 const imageRatios = ["1:1", "4:5", "3:4", "16:9", "9:16"];
 const videoRatios = ["16:9", "9:16"];
@@ -34,83 +37,237 @@ const workflowStages = [
   }
 ];
 
+type MemoryPrompt = {
+  id: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  score: number;
+};
+
+type MemoryRun = {
+  id: string;
+  title: string;
+  engine: string;
+  duration: string;
+  tokensUsed: number;
+  aspectRatio: string | null;
+  quality: string | null;
+};
+
+type RecommendedSettings = {
+  model: string;
+  aspectRatio: string;
+  quality: "Standard" | "High" | "Ultra";
+  batchSize: number;
+  averageTokens: number;
+};
+
+type StudioState = {
+  mode: "image" | "video";
+  ratio: string;
+  quality: (typeof qualityOptions)[number];
+  batch: string;
+  selectedModel: string;
+  promptText: string;
+  running: boolean;
+  submitError: string;
+  runtimeNotice: string;
+  suggestionError: string;
+  suggesting: boolean;
+  runs: RunSummary[];
+  memoryPrompts: MemoryPrompt[];
+  memoryRuns: MemoryRun[];
+  recommendedSettings: RecommendedSettings | null;
+  plan: GenerationPlan | null;
+  planLoading: boolean;
+  scoringRunId: string | null;
+  lastScoreResult: ScoreResponse | null;
+};
+
+type StudioAction =
+  | { type: "SET_MODE"; mode: "image" | "video"; model: string }
+  | { type: "SET_RATIO"; ratio: string }
+  | { type: "SET_QUALITY"; quality: (typeof qualityOptions)[number] }
+  | { type: "SET_BATCH"; batch: string }
+  | { type: "SET_MODEL"; model: string }
+  | { type: "SET_PROMPT"; text: string }
+  | { type: "START_GENERATE" }
+  | { type: "GENERATION_STARTED"; run: RunSummary; notice: string }
+  | { type: "GENERATION_POLL_UPDATE"; runId: string; updates: Partial<RunSummary> }
+  | { type: "GENERATION_DONE" }
+  | { type: "GENERATION_ERROR"; error: string }
+  | { type: "START_SUGGEST" }
+  | { type: "SUGGEST_SUCCESS"; prompts: MemoryPrompt[]; runs: MemoryRun[]; settings: RecommendedSettings }
+  | { type: "SUGGEST_ERROR"; error: string }
+  | { type: "APPLY_SETTINGS" }
+  | { type: "SET_NOTICE"; notice: string }
+  | { type: "PLAN_LOADING" }
+  | { type: "PLAN_LOADED"; plan: GenerationPlan }
+  | { type: "PLAN_ERROR" }
+  | { type: "APPLY_PLAN" }
+  | { type: "SCORE_SUBMITTED"; result: ScoreResponse }
+  | { type: "DISMISS_SCORE" };
+
+function studioReducer(state: StudioState, action: StudioAction): StudioState {
+  switch (action.type) {
+    case "SET_MODE":
+      return {
+        ...state,
+        mode: action.mode,
+        selectedModel: action.model,
+        ratio: "16:9",
+        promptText: action.mode === "image"
+          ? "Premium product scene with controlled reflections, sculpted natural light, elegant material detail, and a restrained editorial composition."
+          : "Luxury product reveal with a slow forward push, clean highlight motion, soft environmental reflections, and stable premium pacing."
+      };
+    case "SET_RATIO":
+      return { ...state, ratio: action.ratio };
+    case "SET_QUALITY":
+      return { ...state, quality: action.quality };
+    case "SET_BATCH":
+      return { ...state, batch: action.batch };
+    case "SET_MODEL":
+      return { ...state, selectedModel: action.model };
+    case "SET_PROMPT":
+      return { ...state, promptText: action.text };
+    case "START_GENERATE":
+      return { ...state, running: true, submitError: "", runtimeNotice: "" };
+    case "GENERATION_STARTED":
+      return {
+        ...state,
+        runs: [action.run, ...state.runs].slice(0, 10),
+        runtimeNotice: action.notice
+      };
+    case "GENERATION_POLL_UPDATE":
+      return {
+        ...state,
+        runs: state.runs.map((run) =>
+          run.id === action.runId ? { ...run, ...action.updates } : run
+        )
+      };
+    case "GENERATION_DONE":
+      return { ...state, running: false };
+    case "GENERATION_ERROR":
+      return { ...state, running: false, submitError: action.error };
+    case "START_SUGGEST":
+      return { ...state, suggesting: true, suggestionError: "" };
+    case "SUGGEST_SUCCESS":
+      return {
+        ...state,
+        suggesting: false,
+        memoryPrompts: action.prompts,
+        memoryRuns: action.runs,
+        recommendedSettings: action.settings,
+        runtimeNotice: "Prompt memory analysis updated from successful runs."
+      };
+    case "SUGGEST_ERROR":
+      return { ...state, suggesting: false, suggestionError: action.error };
+    case "APPLY_SETTINGS":
+      if (!state.recommendedSettings) return state;
+      return {
+        ...state,
+        selectedModel: state.recommendedSettings.model,
+        ratio: state.recommendedSettings.aspectRatio,
+        quality: state.recommendedSettings.quality,
+        batch: state.mode === "image" ? String(state.recommendedSettings.batchSize) : state.batch,
+        runtimeNotice: "Applied recommended settings from memory."
+      };
+    case "SET_NOTICE":
+      return { ...state, runtimeNotice: action.notice };
+    case "PLAN_LOADING":
+      return { ...state, planLoading: true, plan: null };
+    case "PLAN_LOADED":
+      return { ...state, planLoading: false, plan: action.plan };
+    case "PLAN_ERROR":
+      return { ...state, planLoading: false, runtimeNotice: "Could not generate plan." };
+    case "APPLY_PLAN":
+      if (!state.plan) return state;
+      return {
+        ...state,
+        selectedModel: state.plan.recommendedSettings.model,
+        ratio: state.plan.recommendedSettings.aspectRatio,
+        quality: state.plan.recommendedSettings.quality,
+        batch: state.mode === "image" ? String(state.plan.recommendedSettings.batchSize) : state.batch,
+        runtimeNotice: `Plan applied: ${state.plan.steps.filter((s) => !s.optional).length} required steps, ${state.plan.estimatedTotalTokens.toLocaleString()} estimated tokens.`
+      };
+    case "SCORE_SUBMITTED":
+      return { ...state, lastScoreResult: action.result, scoringRunId: null };
+    case "DISMISS_SCORE":
+      return { ...state, lastScoreResult: null };
+    default:
+      return state;
+  }
+}
+
 type StudioWorkbenchProps = {
   providers: ProviderConfig[];
   initialRuns: RunSummary[];
   promptPresets: PromptPreset[];
 };
 
-function defaultPrompt(mode: "image" | "video"): string {
-  return mode === "image"
-    ? "Premium product scene with controlled reflections, sculpted natural light, elegant material detail, and a restrained editorial composition."
-    : "Luxury product reveal with a slow forward push, clean highlight motion, soft environmental reflections, and stable premium pacing.";
-}
-
 export function StudioWorkbench({
   providers,
   initialRuns,
   promptPresets
 }: StudioWorkbenchProps) {
-  const [mode, setMode] = useState<"image" | "video">("image");
-  const [ratio, setRatio] = useState("16:9");
-  const [quality, setQuality] = useState<(typeof qualityOptions)[number]>("High");
-  const [batch, setBatch] = useState("4");
-  const [running, setRunning] = useState(false);
-  const [submitError, setSubmitError] = useState("");
-  const [runtimeNotice, setRuntimeNotice] = useState("");
-  const [suggestionError, setSuggestionError] = useState("");
-  const [suggesting, setSuggesting] = useState(false);
-  const [runs, setRuns] = useState<RunSummary[]>(initialRuns);
-  const [promptText, setPromptText] = useState(defaultPrompt("image"));
-  const [memoryPrompts, setMemoryPrompts] = useState<
-    Array<{ id: string; title: string; summary: string; tags: string[]; score: number }>
-  >([]);
-  const [memoryRuns, setMemoryRuns] = useState<
-    Array<{
-      id: string;
-      title: string;
-      engine: string;
-      duration: string;
-      tokensUsed: number;
-      aspectRatio: string | null;
-      quality: string | null;
-    }>
-  >([]);
-  const [recommendedSettings, setRecommendedSettings] = useState<{
-    model: string;
-    aspectRatio: string;
-    quality: "Standard" | "High" | "Ultra";
-    batchSize: number;
-    averageTokens: number;
-  } | null>(null);
-
   const modelGroups = useMemo(
     () => deriveModelsFromProviders(providers),
     [providers]
   );
 
+  const [state, dispatch] = useReducer(studioReducer, {
+    mode: "image",
+    ratio: "16:9",
+    quality: "High",
+    batch: "4",
+    selectedModel: modelGroups.imageModels[0] ?? "Dreamora FLUX local",
+    promptText:
+      "Premium product scene with controlled reflections, sculpted natural light, elegant material detail, and a restrained editorial composition.",
+    running: false,
+    submitError: "",
+    runtimeNotice: "",
+    suggestionError: "",
+    suggesting: false,
+    runs: initialRuns,
+    memoryPrompts: [],
+    memoryRuns: [],
+    recommendedSettings: null,
+    plan: null,
+    planLoading: false,
+    scoringRunId: null,
+    lastScoreResult: null
+  });
+
+  const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
+    };
+  }, []);
+
   const models = useMemo(
-    () => (mode === "image" ? modelGroups.imageModels : modelGroups.videoModels),
-    [mode, modelGroups]
+    () => (state.mode === "image" ? modelGroups.imageModels : modelGroups.videoModels),
+    [state.mode, modelGroups]
   );
 
-  const [selectedModel, setSelectedModel] = useState(
-    modelGroups.imageModels[0] ?? "Dreamora FLUX local"
-  );
+  const ratios = state.mode === "image" ? imageRatios : videoRatios;
 
-  const ratios = mode === "image" ? imageRatios : videoRatios;
-
-  function handleMode(nextMode: "image" | "video") {
+  const handleMode = useCallback((nextMode: "image" | "video") => {
     const nextModels =
       nextMode === "image" ? modelGroups.imageModels : modelGroups.videoModels;
-    setMode(nextMode);
-    setSelectedModel(nextModels[0] ?? selectedModel);
-    setRatio("16:9");
-    setPromptText(defaultPrompt(nextMode));
-  }
+    dispatch({
+      type: "SET_MODE",
+      mode: nextMode,
+      model: nextModels[0] ?? state.selectedModel
+    });
+  }, [modelGroups, state.selectedModel]);
 
   function applyPreset(preset: PromptPreset) {
-    setPromptText(preset.summary);
+    dispatch({ type: "SET_PROMPT", text: preset.summary });
     if (preset.type.toLowerCase().includes("video")) {
       handleMode("video");
     } else {
@@ -119,14 +276,16 @@ export function StudioWorkbench({
   }
 
   async function handleAnalyzePrompt() {
-    setSuggesting(true);
-    setSuggestionError("");
+    dispatch({ type: "START_SUGGEST" });
 
     try {
-      const result = await getStudioSuggestions(mode, promptText);
-      setMemoryPrompts(result.memory.promptMatches);
-      setMemoryRuns(
-        result.memory.topRuns.map((run) => ({
+      const result = await getStudioSuggestions(state.mode, state.promptText);
+      if (!mountedRef.current) return;
+
+      dispatch({
+        type: "SUGGEST_SUCCESS",
+        prompts: result.memory.promptMatches,
+        runs: result.memory.topRuns.map((run) => ({
           id: run.id,
           title: run.title,
           engine: run.engine,
@@ -134,142 +293,144 @@ export function StudioWorkbench({
           tokensUsed: run.tokensUsed,
           aspectRatio: run.aspectRatio,
           quality: run.quality
-        }))
-      );
-      setRecommendedSettings(result.recommendations);
-      setRuntimeNotice("Prompt memory analysis updated from successful runs.");
+        })),
+        settings: result.recommendations
+      });
     } catch {
-      setSuggestionError("Could not fetch prompt memory recommendations.");
-    } finally {
-      setSuggesting(false);
+      if (!mountedRef.current) return;
+      dispatch({ type: "SUGGEST_ERROR", error: "Could not fetch prompt memory recommendations." });
     }
   }
 
-  function applyRecommendedSettings() {
-    if (!recommendedSettings) {
-      return;
+  async function handleGetPlan() {
+    dispatch({ type: "PLAN_LOADING" });
+    try {
+      const plan = await getGenerationPlan(state.promptText, state.mode);
+      if (!mountedRef.current) return;
+      dispatch({ type: "PLAN_LOADED", plan });
+    } catch {
+      if (!mountedRef.current) return;
+      dispatch({ type: "PLAN_ERROR" });
     }
-
-    setSelectedModel(recommendedSettings.model);
-    setRatio(recommendedSettings.aspectRatio);
-    setQuality(recommendedSettings.quality);
-    if (mode === "image") {
-      setBatch(String(recommendedSettings.batchSize));
-    }
-    setRuntimeNotice("Applied recommended settings from memory.");
   }
 
-  async function pollGeneration(jobId: string, runId: string) {
+  async function handleScoreRun(runId: string, score: number) {
+    try {
+      const result = await scoreRun(runId, score);
+      if (!mountedRef.current) return;
+      dispatch({ type: "SCORE_SUBMITTED", result });
+    } catch {
+      // scoring is non-critical
+    }
+  }
+
+  async function pollGeneration(jobId: string, runId: string, signal: AbortSignal) {
     let attempts = 0;
     const maxAttempts = 120;
 
-    while (attempts < maxAttempts) {
+    while (attempts < maxAttempts && !signal.aborted) {
       attempts += 1;
       await new Promise((resolve) => {
         window.setTimeout(resolve, 2500);
       });
 
+      if (signal.aborted || !mountedRef.current) return;
+
       try {
         const status = await getGenerationStatus(jobId);
+        if (signal.aborted || !mountedRef.current) return;
 
         if (status.status === "completed") {
-          setRuns((current) =>
-            current.map((run) =>
-              run.id === runId
-                ? {
-                    ...run,
-                    status: "Completed",
-                    duration: run.mode === "image" ? "0m 58s" : "2m 12s",
-                    output: status.outputSummary ?? run.output
-                  }
-                : run
-            )
-          );
-          setRunning(false);
+          dispatch({
+            type: "GENERATION_POLL_UPDATE",
+            runId,
+            updates: {
+              status: "Completed",
+              output: status.outputSummary ?? undefined
+            }
+          });
+          dispatch({ type: "GENERATION_DONE" });
           return;
         }
 
         if (status.status === "failed") {
-          setRuns((current) =>
-            current.map((run) =>
-              run.id === runId
-                ? {
-                    ...run,
-                    status: "Failed",
-                    duration: "Failed",
-                    output: status.error ?? "Generation failed"
-                  }
-                : run
-            )
-          );
-          setSubmitError(status.error ?? "Generation failed.");
-          setRunning(false);
+          dispatch({
+            type: "GENERATION_POLL_UPDATE",
+            runId,
+            updates: {
+              status: "Failed",
+              duration: "Failed",
+              output: status.error ?? "Generation failed"
+            }
+          });
+          dispatch({ type: "GENERATION_ERROR", error: status.error ?? "Generation failed." });
           return;
         }
       } catch {
-        setSubmitError("Could not poll generation status.");
-        setRunning(false);
+        if (!mountedRef.current) return;
+        dispatch({ type: "GENERATION_ERROR", error: "Could not poll generation status." });
         return;
       }
     }
 
-    setSubmitError("Generation timeout reached while polling.");
-    setRunning(false);
+    if (mountedRef.current && !signal.aborted) {
+      dispatch({ type: "GENERATION_ERROR", error: "Generation timeout reached while polling." });
+    }
   }
 
   async function handleGenerate() {
-    setRunning(true);
-    setSubmitError("");
-    setRuntimeNotice("");
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    dispatch({ type: "START_GENERATE" });
 
     const now = new Date();
     const runTitle =
-      mode === "image"
+      state.mode === "image"
         ? `Image generation ${now.toLocaleTimeString()}`
         : `Video generation ${now.toLocaleTimeString()}`;
 
     try {
       const started = await startGeneration({
-        mode,
-        prompt: promptText,
-        model: selectedModel,
-        aspectRatio: ratio,
-        quality,
-        batchSize: mode === "image" ? Number(batch) : 1
+        mode: state.mode,
+        prompt: state.promptText,
+        model: state.selectedModel,
+        aspectRatio: state.ratio,
+        quality: state.quality,
+        batchSize: state.mode === "image" ? Number(state.batch) : 1
       });
+
+      if (controller.signal.aborted || !mountedRef.current) return;
 
       const provisionalRun: RunSummary = {
         id: started.runId,
         title: runTitle,
-        engine: selectedModel,
+        engine: state.selectedModel,
         status: "Running",
         duration: "Pending",
-        output: mode === "image" ? `${batch} image(s)` : `${ratio} clip`,
-        mode
+        output: state.mode === "image" ? `${state.batch} image(s)` : `${state.ratio} clip`,
+        mode: state.mode
       };
 
-      setRuns((current) => [provisionalRun, ...current].slice(0, 10));
-
+      let notice = "";
       if (started.backend === "simulated" && started.fallbackReason) {
-        setRuntimeNotice(
-          `ComfyUI fallback active: ${started.fallbackReason}`
-        );
+        notice = `ComfyUI fallback active: ${started.fallbackReason}`;
       } else if (started.backend === "simulated") {
-        setRuntimeNotice("ComfyUI not enabled; using simulated backend.");
+        notice = "ComfyUI not enabled; using simulated backend.";
       } else {
-        setRuntimeNotice(
-          `ComfyUI backend active (${started.workflowPath ?? "workflow path unknown"}).`
-        );
+        notice = `ComfyUI backend active (${started.workflowPath ?? "workflow path unknown"}).`;
       }
 
-      await pollGeneration(started.jobId, started.runId);
+      dispatch({ type: "GENERATION_STARTED", run: provisionalRun, notice });
+      await pollGeneration(started.jobId, started.runId, controller.signal);
     } catch {
-      setSubmitError("Could not start generation. Check API server.");
-      setRunning(false);
+      if (!mountedRef.current) return;
+      dispatch({ type: "GENERATION_ERROR", error: "Could not start generation. Check API server." });
     }
   }
 
-  const displayedRuns = runs.slice(0, 5);
+  const displayedRuns = state.runs.slice(0, 5);
 
   return (
     <div className="space-y-6">
@@ -280,9 +441,10 @@ export function StudioWorkbench({
               <button
                 key={item}
                 onClick={() => handleMode(item)}
+                aria-label={`Switch to ${item} generation`}
                 className={[
                   "rounded-[16px] px-4 py-3 text-sm font-medium transition",
-                  mode === item ? "bg-[#d7ff1f] text-black" : "text-white/72"
+                  state.mode === item ? "bg-[#d7ff1f] text-black" : "text-white/72"
                 ].join(" ")}
               >
                 {item === "image" ? "Image" : "Video"}
@@ -291,8 +453,9 @@ export function StudioWorkbench({
           </div>
 
           <select
-            value={selectedModel}
-            onChange={(event) => setSelectedModel(event.target.value)}
+            value={state.selectedModel}
+            onChange={(event) => dispatch({ type: "SET_MODEL", model: event.target.value })}
+            aria-label="Select model"
             className="rounded-[18px] border border-white/8 bg-white/5 px-4 py-3 text-sm outline-none"
           >
             {models.map((model) => (
@@ -303,8 +466,9 @@ export function StudioWorkbench({
           </select>
 
           <select
-            value={ratio}
-            onChange={(event) => setRatio(event.target.value)}
+            value={state.ratio}
+            onChange={(event) => dispatch({ type: "SET_RATIO", ratio: event.target.value })}
+            aria-label="Select aspect ratio"
             className="rounded-[18px] border border-white/8 bg-white/5 px-4 py-3 text-sm outline-none"
           >
             {ratios.map((item) => (
@@ -315,10 +479,11 @@ export function StudioWorkbench({
           </select>
 
           <select
-            value={quality}
+            value={state.quality}
             onChange={(event) =>
-              setQuality(event.target.value as (typeof qualityOptions)[number])
+              dispatch({ type: "SET_QUALITY", quality: event.target.value as (typeof qualityOptions)[number] })
             }
+            aria-label="Select quality"
             className="rounded-[18px] border border-white/8 bg-white/5 px-4 py-3 text-sm outline-none"
           >
             {qualityOptions.map((item) => (
@@ -329,9 +494,10 @@ export function StudioWorkbench({
           </select>
 
           <select
-            value={batch}
-            onChange={(event) => setBatch(event.target.value)}
-            disabled={mode === "video"}
+            value={state.batch}
+            onChange={(event) => dispatch({ type: "SET_BATCH", batch: event.target.value })}
+            disabled={state.mode === "video"}
+            aria-label="Select batch size"
             className="rounded-[18px] border border-white/8 bg-white/5 px-4 py-3 text-sm outline-none disabled:opacity-60"
           >
             {batchOptions.map((item) => (
@@ -343,38 +509,38 @@ export function StudioWorkbench({
 
           <button
             onClick={handleGenerate}
-            disabled={running || !selectedModel || !promptText.trim()}
+            disabled={state.running || !state.selectedModel || !state.promptText.trim()}
             className="ml-auto rounded-[20px] bg-[#d7ff1f] px-6 py-3 text-sm font-semibold text-black transition hover:brightness-95 disabled:opacity-65"
           >
-            {running ? "Generating..." : "Generate"}
+            {state.running ? "Generating..." : "Generate"}
           </button>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <button
             onClick={handleAnalyzePrompt}
-            disabled={suggesting || !promptText.trim()}
+            disabled={state.suggesting || !state.promptText.trim()}
             className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm disabled:opacity-60"
           >
-            {suggesting ? "Analyzing..." : "Analyze Prompt"}
+            {state.suggesting ? "Analyzing..." : "Analyze Prompt"}
           </button>
           <button
-            onClick={applyRecommendedSettings}
-            disabled={!recommendedSettings}
+            onClick={() => dispatch({ type: "APPLY_SETTINGS" })}
+            disabled={!state.recommendedSettings}
             className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm disabled:opacity-60"
           >
             Apply Best Settings
           </button>
-          {recommendedSettings ? (
+          {state.recommendedSettings ? (
             <span className="text-sm text-black/65">
-              Avg tokens: {recommendedSettings.averageTokens.toLocaleString()}
+              Avg tokens: {state.recommendedSettings.averageTokens.toLocaleString()}
             </span>
           ) : null}
         </div>
-        {runtimeNotice ? (
-          <p className="mt-3 text-sm text-black/70">{runtimeNotice}</p>
+        {state.runtimeNotice ? (
+          <p className="mt-3 text-sm text-black/70">{state.runtimeNotice}</p>
         ) : null}
-        {submitError ? <p className="mt-2 text-sm text-red-600">{submitError}</p> : null}
-        {suggestionError ? <p className="mt-2 text-sm text-red-600">{suggestionError}</p> : null}
+        {state.submitError ? <p className="mt-2 text-sm text-red-600">{state.submitError}</p> : null}
+        {state.suggestionError ? <p className="mt-2 text-sm text-red-600">{state.suggestionError}</p> : null}
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
@@ -382,15 +548,16 @@ export function StudioWorkbench({
           <div className="border-b border-black/8 px-6 py-4">
             <p className="text-sm text-black/45">Generator</p>
             <h2 className="mt-1 text-2xl font-semibold tracking-tight">
-              {mode === "image" ? "Describe the image" : "Describe the video"}
+              {state.mode === "image" ? "Describe the image" : "Describe the video"}
             </h2>
           </div>
           <div className="p-6">
             <div className="rounded-[28px] border border-[#dce2ef] bg-white p-5">
-              <p className="text-sm text-black/42">Prompt</p>
+              <label htmlFor="studio-prompt" className="text-sm text-black/42">Prompt</label>
               <textarea
-                value={promptText}
-                onChange={(event) => setPromptText(event.target.value)}
+                id="studio-prompt"
+                value={state.promptText}
+                onChange={(event) => dispatch({ type: "SET_PROMPT", text: event.target.value })}
                 className="mt-3 min-h-32 w-full resize-y rounded-xl border border-black/10 bg-[#fcfcfc] p-3 text-base leading-7 text-black/72 outline-none"
               />
               <div className="mt-4 flex flex-wrap gap-2">
@@ -409,13 +576,13 @@ export function StudioWorkbench({
             <div className="mt-5 grid gap-4 md:grid-cols-4">
               <InfoCard
                 label="Mode"
-                value={mode === "image" ? "Image generation" : "Video generation"}
+                value={state.mode === "image" ? "Image generation" : "Video generation"}
               />
-              <InfoCard label="Model" value={selectedModel} />
-              <InfoCard label="Aspect ratio" value={ratio} />
+              <InfoCard label="Model" value={state.selectedModel} />
+              <InfoCard label="Aspect ratio" value={state.ratio} />
               <InfoCard
                 label="Quality / Batch"
-                value={`${quality} - ${mode === "image" ? batch : "n/a"}`}
+                value={`${state.quality} - ${state.mode === "image" ? state.batch : "n/a"}`}
               />
             </div>
 
@@ -428,12 +595,12 @@ export function StudioWorkbench({
                   </h3>
                 </div>
                 <div className="rounded-full border border-black/8 bg-white px-3 py-1 text-xs text-black/58">
-                  {running ? "Live" : "Idle"}
+                  {state.running ? "Live" : "Idle"}
                 </div>
               </div>
 
               <div className="mt-6 grid min-h-[420px] grid-cols-[1fr_260px] gap-0 overflow-hidden rounded-[26px] border border-black/8 bg-white">
-                <div className="grid-fade relative p-8">
+                <div className="grid-fade relative p-8" role="region" aria-label="Workflow stages">
                   <div className="absolute left-10 top-6 rounded-full bg-[#dff9ea] px-3 py-1 text-xs font-medium text-[#23945d]">
                     Run queue
                   </div>
@@ -443,7 +610,7 @@ export function StudioWorkbench({
                         key={stage.title}
                         initial={{ opacity: 0.6, y: 8 }}
                         animate={{
-                          opacity: running ? 1 : 0.86,
+                          opacity: state.running ? 1 : 0.86,
                           y: 0
                         }}
                         transition={{ delay: index * 0.18 }}
@@ -453,10 +620,10 @@ export function StudioWorkbench({
                           <motion.div
                             className="absolute left-6 top-[88px] h-16 w-px bg-[#6be29c]"
                             animate={{
-                              opacity: running ? [0.25, 1, 0.25] : 0.18
+                              opacity: state.running ? [0.25, 1, 0.25] : 0.18
                             }}
                             transition={{
-                              repeat: running ? Number.POSITIVE_INFINITY : 0,
+                              repeat: state.running ? Number.POSITIVE_INFINITY : 0,
                               duration: 1.4,
                               delay: index * 0.2
                             }}
@@ -466,7 +633,7 @@ export function StudioWorkbench({
                         <motion.div
                           className="rounded-[24px] border border-[#9de7ba] bg-white px-5 py-4 shadow-[0_14px_40px_rgba(60,80,80,0.05)]"
                           animate={{
-                            boxShadow: running
+                            boxShadow: state.running
                               ? [
                                   "0 14px 40px rgba(60,80,80,0.05)",
                                   "0 18px 44px rgba(77, 222, 133, 0.16)",
@@ -475,7 +642,7 @@ export function StudioWorkbench({
                               : "0 14px 40px rgba(60,80,80,0.05)"
                           }}
                           transition={{
-                            repeat: running ? Number.POSITIVE_INFINITY : 0,
+                            repeat: state.running ? Number.POSITIVE_INFINITY : 0,
                             duration: 1.6,
                             delay: index * 0.18
                           }}
@@ -483,7 +650,7 @@ export function StudioWorkbench({
                           <div className="flex items-center justify-between gap-4">
                             <p className="font-medium">{stage.title}</p>
                             <span className="rounded-full bg-[#e8fff0] px-3 py-1 text-xs text-[#23945d]">
-                              {running
+                              {state.running
                                 ? index === workflowStages.length - 1
                                   ? "Finishing"
                                   : "Processing"
@@ -499,27 +666,51 @@ export function StudioWorkbench({
                   </div>
                 </div>
 
-                <div className="border-l border-black/8 bg-[#fcfcfa]">
+                <div className="border-l border-black/8 bg-[#fcfcfa]" role="complementary" aria-label="Recent runs">
                   <div className="border-b border-black/8 px-4 py-4">
                     <p className="text-lg font-semibold tracking-tight">
                       Recent runs
                     </p>
                   </div>
                   <div className="space-y-1 px-3 py-3">
-                    {displayedRuns.map((run, index) => (
+                    {displayedRuns.map((run) => (
                       <div
-                        key={run.id ?? `${run.title}-${index}`}
-                        className="flex items-center justify-between rounded-[18px] px-3 py-3 hover:bg-white"
+                        key={run.id ?? run.title}
+                        className="rounded-[18px] px-3 py-3 hover:bg-white"
                       >
-                        <div>
-                          <p className="font-medium">{run.title}</p>
-                          <p className="text-sm text-black/45">
-                            {run.status} - {run.duration}
-                          </p>
+                        <div className="flex items-center justify-between">
+                          <div className="min-w-0">
+                            <p className="truncate font-medium">{run.title}</p>
+                            <p className="text-sm text-black/45">
+                              {run.status} - {run.duration}
+                            </p>
+                          </div>
+                          <span className={[
+                            "shrink-0 rounded-full px-2 py-1 text-xs",
+                            run.status === "Failed"
+                              ? "bg-red-50 text-red-600"
+                              : run.status === "Running"
+                                ? "bg-blue-50 text-blue-600"
+                                : "bg-[#edf7ef] text-[#23945d]"
+                          ].join(" ")}>
+                            {run.status}
+                          </span>
                         </div>
-                        <span className="rounded-full bg-[#edf7ef] px-2 py-1 text-xs text-[#23945d]">
-                          {run.status}
-                        </span>
+                        {run.id && run.status === "Completed" ? (
+                          <div className="mt-2 flex gap-1">
+                            {[1, 2, 3, 4, 5].map((s) => (
+                              <button
+                                key={s}
+                                onClick={() => handleScoreRun(run.id!, s)}
+                                aria-label={`Score ${s} out of 5`}
+                                className="h-5 w-5 rounded-full border border-black/10 text-[10px] font-medium text-black/50 transition hover:bg-[#d7ff1f] hover:text-black"
+                              >
+                                {s}
+                              </button>
+                            ))}
+                            <span className="ml-1 text-[10px] text-black/35 leading-5">rate</span>
+                          </div>
+                        ) : null}
                       </div>
                     ))}
                   </div>
@@ -545,28 +736,62 @@ export function StudioWorkbench({
           <div className="panel rounded-[34px] p-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-black/45">Execution note</p>
+                <p className="text-sm text-black/45">Workflow planner</p>
                 <h3 className="mt-1 text-xl font-semibold tracking-tight">
-                  Minimal parameter design
+                  Generation recipe
                 </h3>
               </div>
-              <span className="rounded-full border border-black/8 bg-white px-3 py-1 text-xs text-black/55">
-                Intentional
-              </span>
+              <button
+                onClick={handleGetPlan}
+                disabled={state.planLoading || !state.promptText.trim()}
+                className="rounded-full border border-black/10 bg-white px-3 py-1 text-xs disabled:opacity-60"
+              >
+                {state.planLoading ? "Planning..." : "Plan"}
+              </button>
             </div>
-            <div className="mt-4 space-y-3 text-sm leading-6 text-black/58">
-              <p>
-                Image generation uses only model, aspect ratio, quality, and
-                batch size.
+            {state.plan ? (
+              <div className="mt-4 space-y-2">
+                <p className="text-xs text-black/55">{state.plan.reasoning}</p>
+                {state.plan.steps.map((step) => (
+                  <div
+                    key={step.order}
+                    className={[
+                      "flex items-start gap-3 rounded-[16px] px-3 py-2",
+                      step.optional ? "bg-black/3" : "bg-[#edf7ef]"
+                    ].join(" ")}
+                  >
+                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-black/8 text-[10px] font-semibold">
+                      {step.order}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-xs font-medium">
+                        {step.action.replace(/_/g, " ")}{" "}
+                        <span className="font-normal text-black/45">({step.engine})</span>
+                        {step.optional ? (
+                          <span className="ml-1 text-black/35">optional</span>
+                        ) : null}
+                      </p>
+                      <p className="mt-0.5 text-[11px] leading-4 text-black/50">{step.description}</p>
+                    </div>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between pt-2">
+                  <span className="text-xs text-black/45">
+                    ~{state.plan.estimatedTotalTokens.toLocaleString()} tokens (required steps)
+                  </span>
+                  <button
+                    onClick={() => dispatch({ type: "APPLY_PLAN" })}
+                    className="rounded-full bg-[#d7ff1f] px-3 py-1 text-xs font-medium text-black"
+                  >
+                    Apply plan settings
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-3 text-sm leading-6 text-black/55">
+                Analyze your prompt to get a multi-step generation recipe with content-aware settings.
               </p>
-              <p>
-                Video generation uses only model, aspect ratio, and quality.
-              </p>
-              <p>
-                Preset chips speed up prompt authoring and reduce repetitive
-                manual writing during iterations.
-              </p>
-            </div>
+            )}
           </div>
 
           <div className="panel rounded-[34px] p-6">
@@ -574,13 +799,13 @@ export function StudioWorkbench({
             <h3 className="mt-2 text-xl font-semibold tracking-tight">
               Retrieved context
             </h3>
-            {memoryPrompts.length === 0 ? (
+            {state.memoryPrompts.length === 0 ? (
               <p className="mt-3 text-sm leading-6 text-black/55">
                 Analyze your prompt to retrieve similar presets and successful run signals.
               </p>
             ) : (
               <div className="mt-4 space-y-3">
-                {memoryPrompts.slice(0, 3).map((item) => (
+                {state.memoryPrompts.slice(0, 3).map((item) => (
                   <div
                     key={item.id}
                     className="rounded-[20px] border border-black/8 bg-white px-4 py-3"
@@ -601,13 +826,13 @@ export function StudioWorkbench({
             <h3 className="mt-2 text-xl font-semibold tracking-tight">
               Best recent completions
             </h3>
-            {memoryRuns.length === 0 ? (
+            {state.memoryRuns.length === 0 ? (
               <p className="mt-3 text-sm leading-6 text-black/55">
                 No completed run memory loaded yet.
               </p>
             ) : (
               <div className="mt-4 space-y-3">
-                {memoryRuns.slice(0, 3).map((run) => (
+                {state.memoryRuns.slice(0, 3).map((run) => (
                   <div
                     key={run.id}
                     className="rounded-[20px] border border-black/8 bg-white px-4 py-3"
@@ -628,16 +853,44 @@ export function StudioWorkbench({
       </div>
 
       <AnimatePresence>
-        {running ? (
+        {state.running ? (
           <motion.div
+            key="generating"
             initial={{ opacity: 0, y: 18 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 18 }}
+            role="alert"
             className="fixed bottom-5 right-5 rounded-[22px] border border-black/8 bg-white px-5 py-4 shadow-[0_20px_70px_rgba(28,34,48,0.15)]"
           >
             <p className="font-medium">Generation in progress</p>
             <p className="mt-1 text-sm text-black/56">
               Routing model, processing output, and collecting usage data.
+            </p>
+          </motion.div>
+        ) : null}
+        {state.lastScoreResult ? (
+          <motion.div
+            key="scored"
+            initial={{ opacity: 0, y: 18 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 18 }}
+            className="fixed bottom-5 right-5 rounded-[22px] border border-black/8 bg-white px-5 py-4 shadow-[0_20px_70px_rgba(28,34,48,0.15)]"
+          >
+            <div className="flex items-center justify-between gap-4">
+              <p className="font-medium">
+                Scored {state.lastScoreResult.score.score}/5
+              </p>
+              <button
+                onClick={() => dispatch({ type: "DISMISS_SCORE" })}
+                className="text-xs text-black/40 hover:text-black"
+              >
+                dismiss
+              </button>
+            </div>
+            <p className="mt-1 text-sm text-black/56">
+              {state.lastScoreResult.regeneration.shouldRegenerate
+                ? state.lastScoreResult.regeneration.reason
+                : "Score recorded. Recommendations will weight this feedback."}
             </p>
           </motion.div>
         ) : null}

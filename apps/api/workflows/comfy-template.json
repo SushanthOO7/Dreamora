@@ -36,7 +36,7 @@
   "7": {
     "class_type": "KSampler",
     "inputs": {
-      "seed": 123456789,
+      "seed": __SEED__,
       "steps": __STEPS__,
       "cfg": 6,
       "sampler_name": "euler",

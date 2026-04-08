@@ -94,14 +94,45 @@ Known limitations:
 
 ## Stage 6 - Intelligent Orchestration
 
-Status: Planned
+Status: Completed
 
-Planned scope:
+Delivered:
 
-- Semantic RAG (embedding + vector search for prompts/references)
-- Assistant planner for multi-step generation recipes
-- MCP server integration for workflow tool orchestration
-- Policy-based auto-regeneration rules
+- Semantic search engine (`apps/api/src/semantic.ts`):
+  - TF-IDF vectorization with bigram support
+  - Cosine similarity scoring across prompts and runs
+  - Replaces lexical keyword matching in suggestions endpoint
+  - Dedicated search endpoint: `GET /api/studio/search`
+- Workflow planner (`apps/api/src/planner.ts`):
+  - Content signal detection (product, portrait, motion, typography, upscale)
+  - Style classification (cinematic, editorial, noir, etc.)
+  - Multi-step recipe generation with mode-specific pipelines
+  - Quality-weighted run history for parameter recommendations
+  - Planner endpoint: `POST /api/studio/plan`
+- Quality scoring and feedback loop (`apps/api/src/scoring.ts`):
+  - 1-5 run scoring with notes
+  - Score-weighted recommendations in suggestions endpoint
+  - Score persistence in store (run.score, run.scoreNotes fields)
+  - Scoring endpoint: `POST /api/runs/:id/score`
+  - Score distribution tracking
+- Auto-regeneration policies:
+  - Low quality retry (score <= 2)
+  - Failure retry (up to 2 retries)
+  - Timeout retry (disabled by default)
+  - Parameter adjustments per policy (quality, batch, steps)
+  - Policy management: `GET /api/policies`, `PATCH /api/policies/:id`
+- Studio frontend updates:
+  - Workflow planner panel with step visualization
+  - Apply plan settings button
+  - Run scoring buttons (1-5) on completed runs
+  - Score feedback toast with regeneration decision display
+
+Known limitations:
+
+- Semantic index is in-memory, rebuilt on each suggestions request
+- Scoring is in-memory (not persisted across restarts except via store.score field)
+- MCP server integration deferred to Stage 7 (requires stable direct orchestration first)
+- No actual auto-regeneration execution yet (policies evaluate but don't trigger runs)
 
 ## Stage 7 - Production Hardening
 

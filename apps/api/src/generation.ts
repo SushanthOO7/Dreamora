@@ -38,6 +38,13 @@ const jobs = new Map<string, GenerationJob>();
 const pollers = new Map<string, NodeJS.Timeout>();
 const MAX_JOB_CACHE = 500;
 
+const workflowCache = new Map<string, { content: string; loadedAt: number }>();
+const WORKFLOW_CACHE_TTL = 60_000;
+
+function randomSeed(): number {
+  return Math.floor(Math.random() * 2_147_483_647) + 1;
+}
+
 function ratioToResolution(ratio: string, mode: "image" | "video"): { width: number; height: number } {
   const presetsImage: Record<string, { width: number; height: number }> = {
     "1:1": { width: 1024, height: 1024 },
@@ -86,6 +93,26 @@ function resolveWorkflowPath(mode: "image" | "video"): string | null {
   return path.join(cwd, "apps", "api", configured);
 }
 
+async function loadWorkflow(filePath: string): Promise<string> {
+  const cached = workflowCache.get(filePath);
+  if (cached && Date.now() - cached.loadedAt < WORKFLOW_CACHE_TTL) {
+    return cached.content;
+  }
+
+  const content = await readFile(filePath, "utf8");
+  workflowCache.set(filePath, { content, loadedAt: Date.now() });
+  return content;
+}
+
+function sanitizePromptForJson(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r")
+    .replace(/\t/g, "\\t");
+}
+
 function applyWorkflowTokens(
   workflowText: string,
   request: GenerationRequest,
@@ -94,18 +121,22 @@ function applyWorkflowTokens(
   const { width, height } = ratioToResolution(request.aspectRatio, request.mode);
   const steps = qualityToSteps(request.quality);
   const batch = request.mode === "image" ? request.batchSize ?? 1 : 1;
+  const seed = randomSeed();
+  const safePrompt = sanitizePromptForJson(request.prompt);
 
   return workflowText
     .replaceAll("\"__WIDTH__\"", String(width))
     .replaceAll("\"__HEIGHT__\"", String(height))
     .replaceAll("\"__STEPS__\"", String(steps))
     .replaceAll("\"__BATCH__\"", String(batch))
-    .replaceAll("__PROMPT__", request.prompt)
+    .replaceAll("\"__SEED__\"", String(seed))
+    .replaceAll("__PROMPT__", safePrompt)
     .replaceAll("__MODEL__", request.model)
     .replaceAll("__WIDTH__", String(width))
     .replaceAll("__HEIGHT__", String(height))
     .replaceAll("__STEPS__", String(steps))
     .replaceAll("__BATCH__", String(batch))
+    .replaceAll("__SEED__", String(seed))
     .replaceAll("__RUN_ID__", runId);
 }
 
@@ -124,8 +155,16 @@ async function submitToComfy(
     );
   }
 
-  const rawWorkflow = await readFile(workflowPath, "utf8");
-  const workflowJson = JSON.parse(applyWorkflowTokens(rawWorkflow, request, runId));
+  const rawWorkflow = await loadWorkflow(workflowPath);
+
+  let workflowJson: unknown;
+  try {
+    workflowJson = JSON.parse(applyWorkflowTokens(rawWorkflow, request, runId));
+  } catch (parseError) {
+    throw new Error(
+      `Workflow JSON parse failed after token substitution: ${(parseError as Error).message}`
+    );
+  }
 
   const response = await fetch(`${comfyUrl}/prompt`, {
     method: "POST",
@@ -138,7 +177,7 @@ async function submitToComfy(
   });
 
   if (!response.ok) {
-    const body = await response.text();
+    const body = await response.text().catch(() => "(could not read response body)");
     throw new Error(`Comfy submit failed with ${response.status}: ${body.slice(0, 500)}`);
   }
 
@@ -152,13 +191,25 @@ async function submitToComfy(
 
 async function fetchComfyHistory(promptId: string): Promise<ComfyHistoryResult> {
   const comfyUrl = process.env.COMFYUI_URL ?? "http://127.0.0.1:8188";
-  const response = await fetch(`${comfyUrl}/history/${promptId}`);
+
+  let response: Response;
+  try {
+    response = await fetch(`${comfyUrl}/history/${promptId}`);
+  } catch {
+    return { status: "running" };
+  }
 
   if (!response.ok) {
     return { status: "running" };
   }
 
-  const payload = (await response.json()) as Record<string, any>;
+  let payload: Record<string, any>;
+  try {
+    payload = (await response.json()) as Record<string, any>;
+  } catch {
+    return { status: "running" };
+  }
+
   const run = payload[promptId];
   if (!run) {
     return { status: "running" };
@@ -186,11 +237,12 @@ async function fetchComfyHistory(promptId: string): Promise<ComfyHistoryResult> 
   const outputs = run.outputs ? Object.values(run.outputs) : [];
   let outputCount = 0;
   for (const output of outputs) {
-    if (Array.isArray((output as any).images)) {
-      outputCount += (output as any).images.length;
+    const out = output as Record<string, unknown>;
+    if (Array.isArray(out.images)) {
+      outputCount += out.images.length;
     }
-    if (Array.isArray((output as any).gifs)) {
-      outputCount += (output as any).gifs.length;
+    if (Array.isArray(out.gifs)) {
+      outputCount += out.gifs.length;
     }
   }
 
@@ -226,6 +278,13 @@ function pruneJobs(): void {
       jobs.delete(jobId);
     }
   }
+}
+
+export function formatDuration(startMs: number, endMs: number): string {
+  const totalSeconds = Math.round((endMs - startMs) / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
 }
 
 export function createSimulatedJob(runId: string, request: GenerationRequest): GenerationJob {
@@ -274,114 +333,140 @@ export async function createComfyOrSimulatedJob(
       startedAt: Date.now()
     };
     jobs.set(jobId, running);
-    pruneJobs();
     return running;
   } catch (error) {
     const fallback: GenerationJob = {
       ...initial,
       backend: "simulated",
       status: "queued",
-      error: (error as Error).message
+      error: error instanceof Error ? error.message : String(error)
     };
     jobs.set(jobId, fallback);
-    pruneJobs();
     return fallback;
   }
 }
 
+const POLL_INITIAL_MS = 2000;
+const POLL_MAX_MS = 10_000;
+const POLL_BACKOFF = 1.5;
+
 export function startComfyPolling(
   job: GenerationJob,
-  onCompleted: (outputCount: number) => Promise<void>,
-  onFailed: (reason: string) => Promise<void>
+  onCompleted: (outputCount: number, durationStr: string) => Promise<void>,
+  onFailed: (reason: string, durationStr: string) => Promise<void>
 ): void {
   if (!job.promptId || job.backend !== "comfy") {
     return;
   }
 
   clearJobPoller(job.id);
-  const timer = setInterval(async () => {
+  const startTime = job.startedAt ?? Date.now();
+  let currentInterval = POLL_INITIAL_MS;
+  let polling = false;
+
+  const poll = async () => {
+    if (polling) {
+      return;
+    }
+    polling = true;
+
     const current = jobs.get(job.id);
     if (!current || current.status === "completed" || current.status === "failed") {
       clearJobPoller(job.id);
+      polling = false;
       return;
     }
 
     try {
       const result = await fetchComfyHistory(job.promptId!);
       if (result.status === "running") {
+        polling = false;
+        // Increase interval with backoff
+        currentInterval = Math.min(currentInterval * POLL_BACKOFF, POLL_MAX_MS);
+        clearJobPoller(job.id);
+        const timer = setTimeout(poll, currentInterval);
+        pollers.set(job.id, timer);
         return;
       }
+
+      const endTime = Date.now();
+      const duration = formatDuration(startTime, endTime);
 
       if (result.status === "failed") {
         const failed: GenerationJob = {
           ...current,
           status: "failed",
-          completedAt: Date.now(),
+          completedAt: endTime,
           error: result.error ?? "Generation failed"
         };
         jobs.set(job.id, failed);
-        pruneJobs();
         clearJobPoller(job.id);
-        await onFailed(failed.error ?? "Generation failed");
+        polling = false;
+        await onFailed(failed.error ?? "Generation failed", duration);
         return;
       }
 
       const done: GenerationJob = {
         ...current,
         status: "completed",
-        completedAt: Date.now(),
+        completedAt: endTime,
         outputSummary: `${result.outputCount ?? 0} artifact(s)`
       };
       jobs.set(job.id, done);
-      pruneJobs();
       clearJobPoller(job.id);
-      await onCompleted(result.outputCount ?? 0);
+      polling = false;
+      await onCompleted(result.outputCount ?? 0, duration);
     } catch (error) {
+      const endTime = Date.now();
+      const duration = formatDuration(startTime, endTime);
+      const errorMsg = error instanceof Error ? error.message : String(error);
       const failed: GenerationJob = {
         ...current,
         status: "failed",
-        completedAt: Date.now(),
-        error: (error as Error).message
+        completedAt: endTime,
+        error: errorMsg
       };
       jobs.set(job.id, failed);
-      pruneJobs();
       clearJobPoller(job.id);
-      await onFailed(failed.error ?? "Generation failed");
+      polling = false;
+      await onFailed(errorMsg, duration);
     }
-  }, 4000);
+  };
 
+  const timer = setTimeout(poll, currentInterval);
   pollers.set(job.id, timer);
 }
 
 export function startSimulatedProgress(
   job: GenerationJob,
   onRunning: () => Promise<void>,
-  onCompleted: () => Promise<void>
+  onCompleted: (durationStr: string) => Promise<void>
 ): void {
+  const startTime = Date.now();
   jobs.set(job.id, {
     ...job,
     status: "running",
-    startedAt: Date.now()
+    startedAt: startTime
   });
-  pruneJobs();
 
   void onRunning();
 
+  const duration = job.mode === "image" ? 3000 : 5500;
   const timer = setTimeout(async () => {
     const current = jobs.get(job.id);
     if (!current) {
       return;
     }
 
+    const endTime = Date.now();
     jobs.set(job.id, {
       ...current,
       status: "completed",
-      completedAt: Date.now(),
+      completedAt: endTime,
       outputSummary: current.mode === "image" ? "simulated image set" : "simulated video clip"
     });
-    pruneJobs();
-    await onCompleted();
-  }, 5500);
+    await onCompleted(formatDuration(startTime, endTime));
+  }, duration);
 
   pollers.set(job.id, timer);
 }

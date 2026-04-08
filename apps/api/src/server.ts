@@ -8,6 +8,17 @@ import {
   startComfyPolling,
   startSimulatedProgress
 } from "./generation.js";
+import { createPlan } from "./planner.js";
+import {
+  evaluateRegeneration,
+  getRunScore,
+  getPolicies,
+  scoreRun,
+  updatePolicy,
+  getScoreDistribution,
+  getAllScores
+} from "./scoring.js";
+import { getSemanticIndex } from "./semantic.js";
 import {
   createProject,
   createPrompt,
@@ -25,7 +36,14 @@ const app = Fastify({
 });
 
 await app.register(cors, {
-  origin: true
+  origin: process.env.CORS_ORIGIN ?? true
+});
+
+app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
+  app.log.error(error);
+  reply.code(error.statusCode ?? 500).send({
+    error: error.message ?? "Internal server error"
+  });
 });
 
 function formatRelativeTime(isoDate: string): string {
@@ -85,13 +103,18 @@ function normalizeModelName(raw: string): string {
 
 function requireFields(values: Array<{ key: string; value: string }>): string | null {
   for (const entry of values) {
-    if (!entry.value) {
+    if (!entry.value || typeof entry.value !== "string") {
       return `${entry.key} is required`;
     }
   }
 
   return null;
 }
+
+const VALID_MODES = new Set(["image", "video"]);
+const VALID_QUALITIES = new Set(["Standard", "High", "Ultra"]);
+const MAX_BATCH = 8;
+const MIN_BATCH = 1;
 
 app.get("/health", async () => ({
   ok: true
@@ -177,7 +200,7 @@ app.post<{
     engine: cleanText(request.body.engine),
     type: cleanText(request.body.type),
     summary: cleanText(request.body.summary),
-    tags: request.body.tags ?? []
+    tags: Array.isArray(request.body.tags) ? request.body.tags : []
   };
 
   const error = requireFields([
@@ -221,6 +244,11 @@ app.post<{
     duration: cleanText(request.body.duration),
     output: cleanText(request.body.output)
   };
+
+  if (!VALID_MODES.has(payload.mode)) {
+    reply.code(400);
+    return { error: "mode must be 'image' or 'video'" };
+  }
 
   const error = requireFields([
     { key: "title", value: payload.title },
@@ -346,12 +374,22 @@ app.patch<{
 app.get("/api/reporting/usage", async () => {
   const { runs } = getStore();
   const totalTokens = runs.reduce((sum, run) => sum + run.tokensUsed, 0);
-  const imageCount = runs.filter((run) => run.mode === "image").length;
-  const videoCount = runs.filter((run) => run.mode === "video").length;
 
+  let imageCount = 0;
+  let videoCount = 0;
   const engineCounts = new Map<string, number>();
+  const weeklyBuckets = new Map<string, number>();
+  const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
   for (const run of runs) {
+    if (run.mode === "image") {
+      imageCount++;
+    } else {
+      videoCount++;
+    }
     engineCounts.set(run.engine, (engineCounts.get(run.engine) ?? 0) + 1);
+    const day = dayLabels[new Date(run.createdAt).getDay()];
+    weeklyBuckets.set(day, (weeklyBuckets.get(day) ?? 0) + 1);
   }
 
   const topModel =
@@ -366,17 +404,11 @@ app.get("/api/reporting/usage", async () => {
       color: breakdownPalette[index % breakdownPalette.length]
     }));
 
-  const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const weeklyBuckets = new Map<string, number>();
-  for (const run of runs) {
-    const day = dayLabels[new Date(run.createdAt).getDay()];
-    weeklyBuckets.set(day, (weeklyBuckets.get(day) ?? 0) + 1);
-  }
-
+  const weeklyPalette = ["#d5def9", "#bdd0ff", "#a9c2ff", "#8fb2ff", "#6e9cff", "#8ec5a5", "#c7d4e8"];
   const weekly = dayLabels.map((label, index) => ({
     label,
     value: Math.min(100, (weeklyBuckets.get(label) ?? 0) * 20 + 20),
-    color: ["#d5def9", "#bdd0ff", "#a9c2ff", "#8fb2ff", "#6e9cff", "#8ec5a5", "#c7d4e8"][index]
+    color: weeklyPalette[index]
   }));
 
   return {
@@ -408,35 +440,80 @@ app.get("/api/reporting/usage", async () => {
   };
 });
 
+function rebuildSemanticIndex(): void {
+  const index = getSemanticIndex();
+  const { prompts, runs } = getStore();
+
+  index.clear();
+
+  for (const prompt of prompts) {
+    index.addDocument({
+      id: prompt.id,
+      text: `${prompt.title} ${prompt.summary} ${prompt.tags.join(" ")}`,
+      source: "prompt",
+      meta: {
+        title: prompt.title,
+        summary: prompt.summary,
+        tags: prompt.tags,
+        engine: prompt.engine,
+        type: prompt.type
+      }
+    });
+  }
+
+  for (const run of runs) {
+    if (run.status !== "Completed") continue;
+    index.addDocument({
+      id: run.id,
+      text: `${run.title} ${run.engine} ${run.promptExcerpt ?? ""} ${run.output}`,
+      source: "run",
+      meta: {
+        title: run.title,
+        engine: run.engine,
+        mode: run.mode,
+        duration: run.duration,
+        tokensUsed: run.tokensUsed,
+        aspectRatio: run.aspectRatio ?? null,
+        quality: run.quality ?? null,
+        batchSize: run.batchSize ?? null,
+        score: run.score ?? null
+      }
+    });
+  }
+}
+
 app.get<{
   Querystring: { mode?: "image" | "video"; query?: string };
 }>("/api/studio/suggestions", async (request) => {
   const mode = request.query.mode === "video" ? "video" : "image";
-  const query = cleanText(request.query.query).toLowerCase();
-  const terms = query.split(/\s+/).filter(Boolean);
+  const query = cleanText(request.query.query);
   const { prompts, runs } = getStore();
+
+  rebuildSemanticIndex();
+  const index = getSemanticIndex();
 
   const completedRuns = runs.filter((run) => run.status === "Completed" && run.mode === mode);
 
-  const promptMatches = prompts
-    .map((prompt) => {
-      const haystack = `${prompt.title} ${prompt.summary} ${prompt.tags.join(" ")}`.toLowerCase();
-      const score =
-        terms.length === 0
-          ? 1
-          : terms.reduce((acc, term) => acc + (haystack.includes(term) ? 1 : 0), 0);
-      return { prompt, score };
-    })
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5)
-    .map((entry) => ({
-      id: entry.prompt.id,
-      title: entry.prompt.title,
-      summary: entry.prompt.summary,
-      tags: entry.prompt.tags,
-      score: entry.score
+  let promptMatches: Array<{ id: string; title: string; summary: string; tags: string[]; score: number }>;
+
+  if (query.length > 0) {
+    const semanticResults = index.search(query, 5, "prompt");
+    promptMatches = semanticResults.map((result) => ({
+      id: result.id,
+      title: (result.meta.title as string) ?? "",
+      summary: (result.meta.summary as string) ?? "",
+      tags: (result.meta.tags as string[]) ?? [],
+      score: result.score
     }));
+  } else {
+    promptMatches = prompts.slice(0, 5).map((p) => ({
+      id: p.id,
+      title: p.title,
+      summary: p.summary,
+      tags: p.tags,
+      score: 1
+    }));
+  }
 
   const modelCounts = new Map<string, number>();
   const ratioCounts = new Map<string, number>();
@@ -444,15 +521,16 @@ app.get<{
   const batchCounts = new Map<number, number>();
 
   for (const run of completedRuns) {
-    modelCounts.set(run.engine, (modelCounts.get(run.engine) ?? 0) + 1);
+    const weight = typeof run.score === "number" ? run.score : 1;
+    modelCounts.set(run.engine, (modelCounts.get(run.engine) ?? 0) + weight);
     if (run.aspectRatio) {
-      ratioCounts.set(run.aspectRatio, (ratioCounts.get(run.aspectRatio) ?? 0) + 1);
+      ratioCounts.set(run.aspectRatio, (ratioCounts.get(run.aspectRatio) ?? 0) + weight);
     }
     if (run.quality) {
-      qualityCounts.set(run.quality, (qualityCounts.get(run.quality) ?? 0) + 1);
+      qualityCounts.set(run.quality, (qualityCounts.get(run.quality) ?? 0) + weight);
     }
     if (typeof run.batchSize === "number") {
-      batchCounts.set(run.batchSize, (batchCounts.get(run.batchSize) ?? 0) + 1);
+      batchCounts.set(run.batchSize, (batchCounts.get(run.batchSize) ?? 0) + weight);
     }
   }
 
@@ -471,7 +549,8 @@ app.get<{
     aspectRatio: run.aspectRatio ?? null,
     quality: run.quality ?? null,
     batchSize: typeof run.batchSize === "number" ? run.batchSize : null,
-    promptExcerpt: run.promptExcerpt ?? null
+    promptExcerpt: run.promptExcerpt ?? null,
+    score: run.score ?? null
   }));
 
   const averageTokens =
@@ -482,11 +561,22 @@ app.get<{
         )
       : 0;
 
+  let semanticRunMatches: Array<{ id: string; title: string; engine: string; score: number }> = [];
+  if (query.length > 0) {
+    semanticRunMatches = index.search(query, 5, "run").map((result) => ({
+      id: result.id,
+      title: (result.meta.title as string) ?? "",
+      engine: (result.meta.engine as string) ?? "",
+      score: result.score
+    }));
+  }
+
   return {
     mode,
     memory: {
       promptMatches,
-      topRuns
+      topRuns,
+      semanticRunMatches
     },
     recommendations: {
       model:
@@ -502,6 +592,135 @@ app.get<{
       averageTokens
     }
   };
+});
+
+// --- Stage 6: Semantic search endpoint ---
+app.get<{
+  Querystring: { query: string; source?: "prompt" | "run"; limit?: string };
+}>("/api/studio/search", async (request, reply) => {
+  const query = cleanText(request.query.query);
+  if (!query) {
+    reply.code(400);
+    return { error: "query is required" };
+  }
+
+  rebuildSemanticIndex();
+  const index = getSemanticIndex();
+  const limit = Math.min(20, Math.max(1, Number(request.query.limit) || 10));
+  const source = request.query.source === "prompt" || request.query.source === "run"
+    ? request.query.source
+    : undefined;
+
+  const results = index.search(query, limit, source);
+  return { query, results, indexSize: index.size };
+});
+
+// --- Stage 6: Workflow planner endpoint ---
+app.post<{
+  Body: {
+    prompt: string;
+    mode: "image" | "video";
+  };
+}>("/api/studio/plan", async (request, reply) => {
+  const prompt = cleanText(request.body.prompt);
+  const mode = request.body.mode;
+
+  if (!prompt) {
+    reply.code(400);
+    return { error: "prompt is required" };
+  }
+
+  if (mode !== "image" && mode !== "video") {
+    reply.code(400);
+    return { error: "mode must be 'image' or 'video'" };
+  }
+
+  const { runs } = getStore();
+  const history = runs.map((r) => ({
+    engine: r.engine,
+    mode: r.mode,
+    quality: r.quality,
+    aspectRatio: r.aspectRatio,
+    batchSize: r.batchSize,
+    score: r.score,
+    status: r.status
+  }));
+
+  const plan = createPlan(prompt, mode, history, {
+    imageModel: process.env.DEFAULT_IMAGE_MODEL ?? "sd_xl_base_1.0.safetensors",
+    videoModel: process.env.DEFAULT_VIDEO_MODEL ?? "wan2.2_ti2v_5B_fp16.safetensors"
+  });
+
+  return plan;
+});
+
+// --- Stage 6: Run scoring endpoint ---
+app.post<{
+  Params: { id: string };
+  Body: { score: number; notes?: string };
+}>("/api/runs/:id/score", async (request, reply) => {
+  const runId = request.params.id;
+  const score = request.body.score;
+  const notes = cleanText(request.body.notes);
+
+  if (typeof score !== "number" || score < 1 || score > 5) {
+    reply.code(400);
+    return { error: "score must be a number between 1 and 5" };
+  }
+
+  const { runs } = getStore();
+  const run = runs.find((r) => r.id === runId);
+  if (!run) {
+    reply.code(404);
+    return { error: "Run not found" };
+  }
+
+  const entry = scoreRun(runId, score, notes);
+
+  await updateRunFields(runId, { score: entry.score, scoreNotes: entry.notes });
+
+  const decision = evaluateRegeneration(
+    runId,
+    run.status === "Completed" ? "completed" : "failed",
+    entry.score
+  );
+
+  return {
+    score: entry,
+    regeneration: decision
+  };
+});
+
+app.get<{
+  Params: { id: string };
+}>("/api/runs/:id/score", async (request, reply) => {
+  const entry = getRunScore(request.params.id);
+  if (!entry) {
+    reply.code(404);
+    return { error: "No score for this run" };
+  }
+  return entry;
+});
+
+// --- Stage 6: Policies endpoint ---
+app.get("/api/policies", async () => {
+  return {
+    policies: getPolicies(),
+    scoreDistribution: getScoreDistribution(),
+    totalScored: getAllScores().length
+  };
+});
+
+app.patch<{
+  Params: { id: string };
+  Body: { enabled?: boolean; threshold?: number; maxRetries?: number };
+}>("/api/policies/:id", async (request, reply) => {
+  const updated = updatePolicy(request.params.id, request.body);
+  if (!updated) {
+    reply.code(404);
+    return { error: "Policy not found" };
+  }
+  return updated;
 });
 
 app.post<{
@@ -520,7 +739,18 @@ app.post<{
   const normalizedModel = normalizeModelName(model);
   const aspectRatio = cleanText(request.body.aspectRatio);
   const quality = request.body.quality;
-  const batchSize = request.body.batchSize ?? 1;
+  const rawBatch = request.body.batchSize ?? 1;
+  const batchSize = Math.max(MIN_BATCH, Math.min(MAX_BATCH, Math.floor(rawBatch)));
+
+  if (!VALID_MODES.has(mode)) {
+    reply.code(400);
+    return { error: "mode must be 'image' or 'video'" };
+  }
+
+  if (!VALID_QUALITIES.has(quality)) {
+    reply.code(400);
+    return { error: "quality must be 'Standard', 'High', or 'Ultra'" };
+  }
 
   const error = requireFields([
     { key: "prompt", value: prompt },
@@ -548,14 +778,14 @@ app.post<{
     promptExcerpt: prompt.slice(0, 280),
     aspectRatio,
     quality,
-    batchSize: mode === "image" ? Math.max(1, batchSize) : 1
+    batchSize: mode === "image" ? batchSize : 1
   });
 
   const job = await createComfyOrSimulatedJob(run.id, {
     mode,
-      prompt,
-      model: normalizedModel,
-      aspectRatio,
+    prompt,
+    model: normalizedModel,
+    aspectRatio,
     quality,
     batchSize
   });
@@ -564,10 +794,10 @@ app.post<{
     await updateRunStatus(run.id, "Running");
     startComfyPolling(
       job,
-      async (outputCount) => {
+      async (outputCount, duration) => {
         await updateRunFields(run.id, {
           status: "Completed",
-          duration: mode === "image" ? "0m 58s" : "2m 12s",
+          duration,
           backend: "comfy",
           output:
             mode === "image"
@@ -575,10 +805,10 @@ app.post<{
               : `${Math.max(1, outputCount)} clip artifact(s)`
         });
       },
-      async (reason) => {
+      async (reason, duration) => {
         await updateRunFields(run.id, {
           status: "Failed",
-          duration: "Failed",
+          duration,
           backend: "comfy",
           output: reason
         });
@@ -591,10 +821,10 @@ app.post<{
       async () => {
         await updateRunStatus(run.id, "Running");
       },
-      async () => {
+      async (duration) => {
         await updateRunFields(run.id, {
           status: "Completed",
-          duration: mode === "image" ? "0m 52s" : "1m 46s",
+          duration,
           backend: "simulated",
           output: mode === "image" ? `${batchSize} image(s)` : `${aspectRatio} clip`
         });

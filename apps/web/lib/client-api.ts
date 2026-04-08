@@ -12,7 +12,8 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`Request failed: ${path}`);
+    const detail = await response.text().catch(() => "");
+    throw new Error(`POST ${path} failed (${response.status}): ${detail.slice(0, 200)}`);
   }
 
   return response.json() as Promise<T>;
@@ -28,7 +29,8 @@ async function patchJson<T>(path: string, body: unknown): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`Request failed: ${path}`);
+    const detail = await response.text().catch(() => "");
+    throw new Error(`PATCH ${path} failed (${response.status}): ${detail.slice(0, 200)}`);
   }
 
   return response.json() as Promise<T>;
@@ -198,6 +200,94 @@ export async function getStudioSuggestions(
   }
 
   return response.json() as Promise<StudioSuggestionsResponse>;
+}
+
+// --- Stage 6: Planner ---
+export type PlanStep = {
+  order: number;
+  action: string;
+  engine: string;
+  description: string;
+  estimatedTokens: number;
+  optional: boolean;
+};
+
+export type GenerationPlan = {
+  id: string;
+  mode: "image" | "video";
+  prompt: string;
+  contentSignals: {
+    hasProduct: boolean;
+    hasPortrait: boolean;
+    hasMotion: boolean;
+    hasTypography: boolean;
+    hasUpscale: boolean;
+    complexity: "simple" | "standard" | "complex";
+    style: string | null;
+  };
+  steps: PlanStep[];
+  estimatedTotalTokens: number;
+  recommendedSettings: {
+    model: string;
+    aspectRatio: string;
+    quality: "Standard" | "High" | "Ultra";
+    batchSize: number;
+  };
+  reasoning: string;
+};
+
+export async function getGenerationPlan(
+  prompt: string,
+  mode: "image" | "video"
+): Promise<GenerationPlan> {
+  return postJson<GenerationPlan>("/api/studio/plan", { prompt, mode });
+}
+
+// --- Stage 6: Scoring ---
+export type ScoreResponse = {
+  score: { runId: string; score: number; notes: string; scoredAt: string };
+  regeneration: {
+    shouldRegenerate: boolean;
+    policyId: string | null;
+    reason: string;
+    adjustments: Array<{ parameter: string; action: string; value?: number | string }>;
+    retriesUsed: number;
+    maxRetries: number;
+  };
+};
+
+export async function scoreRun(
+  runId: string,
+  score: number,
+  notes?: string
+): Promise<ScoreResponse> {
+  return postJson<ScoreResponse>(`/api/runs/${runId}/score`, { score, notes: notes ?? "" });
+}
+
+// --- Stage 6: Semantic search ---
+export type SemanticSearchResult = {
+  id: string;
+  score: number;
+  source: "prompt" | "run";
+  meta: Record<string, unknown>;
+};
+
+export async function semanticSearch(
+  query: string,
+  source?: "prompt" | "run"
+): Promise<{ query: string; results: SemanticSearchResult[]; indexSize: number }> {
+  const params = new URLSearchParams({ query });
+  if (source) params.set("source", source);
+
+  const response = await fetch(`${API_URL}/api/studio/search?${params.toString()}`, {
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    throw new Error("Semantic search failed");
+  }
+
+  return response.json() as Promise<{ query: string; results: SemanticSearchResult[]; indexSize: number }>;
 }
 
 export type StudioModelGroups = {

@@ -20,7 +20,7 @@ import {
   weeklyUsageSeries
 } from "@dreamora/shared";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787";
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8787";
 
 async function getJson<T>(
   path: string,
@@ -36,11 +36,14 @@ async function getJson<T>(
     });
 
     if (!response.ok) {
-      throw new Error(`Request failed for ${path}`);
+      const body = await response.text().catch(() => "");
+      throw new Error(`API ${response.status} for ${path}: ${body.slice(0, 200)}`);
     }
 
     return response.json() as Promise<T>;
   } catch (error) {
+    console.error(`[dreamora] fetch ${path} failed:`, error instanceof Error ? error.message : error);
+
     if (path === "/api/dashboard") {
       return dashboardResponse as T;
     }
