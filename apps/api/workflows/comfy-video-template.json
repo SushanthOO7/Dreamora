@@ -41,7 +41,7 @@
     }
   },
   "42": {
-    "class_type": "EmptyHunyuanLatentVideo",
+    "class_type": "EmptyWanVideoLatent",
     "inputs": {
       "width": __WIDTH__,
       "height": __HEIGHT__,

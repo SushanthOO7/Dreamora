@@ -416,7 +416,6 @@ export function deriveModelsFromProviders(providers: ProviderConfig[]): StudioMo
   const videoModels: string[] = [];
 
   for (const provider of providers) {
-    const model = provider.defaultModel?.trim() || `${provider.name} model`;
     const text = `${provider.name} ${provider.defaultModel}`.toLowerCase();
     const hasImage = text.includes("flux") || text.includes("image") || text.includes("sdxl");
     const hasVideo = text.includes("wan") || text.includes("runway") || text.includes("video");
@@ -427,19 +426,27 @@ export function deriveModelsFromProviders(providers: ProviderConfig[]): StudioMo
     }
 
     // When a provider supports both image and video (e.g. "FLUX + Wan 2.2"),
-    // add it to BOTH lists so mode-switching picks the correct entry.
+    // split into mode-specific friendly names so the UI shows the right model per mode.
     if (hasImage && hasVideo) {
-      imageModels.push(model);
-      videoModels.push(model);
+      const imgName = text.includes("flux") ? "FLUX.1-dev GGUF" : "Image model";
+      const vidName = text.includes("wan") ? "Wan 2.2 5B" : text.includes("runway") ? "Runway Gen-4" : "Video model";
+      imageModels.push(imgName);
+      videoModels.push(vidName);
     } else if (hasVideo) {
+      const model = provider.defaultModel?.trim() || `${provider.name} model`;
       videoModels.push(model);
     } else {
+      const model = provider.defaultModel?.trim() || `${provider.name} model`;
       imageModels.push(model);
     }
   }
 
+  // Deduplicate while preserving order
+  const uniqueImage = [...new Set(imageModels)];
+  const uniqueVideo = [...new Set(videoModels)];
+
   return {
-    imageModels: imageModels.length > 0 ? imageModels : ["sd_xl_base_1.0.safetensors"],
-    videoModels: videoModels.length > 0 ? videoModels : ["wan2.2_ti2v_5B_fp16.safetensors"]
+    imageModels: uniqueImage.length > 0 ? uniqueImage : ["FLUX.1-dev GGUF"],
+    videoModels: uniqueVideo.length > 0 ? uniqueVideo : ["Wan 2.2 5B"]
   };
 }

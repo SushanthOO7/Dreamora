@@ -634,42 +634,105 @@ export function StudioWorkbench({
                       onClick={() => handleMode(m)}
                       className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
                         state.mode === m
-                          ? "bg-[var(--accent)] text-white"
-                          : "border border-[var(--line)] bg-white/50 text-[var(--foreground)]/55"
+                          ? "bg-[var(--accent)] text-white shadow-sm"
+                          : "border border-[var(--line)] bg-white/50 text-[var(--foreground)]/55 hover:bg-white/80"
                       }`}
                     >
                       {m === "image" ? "Image" : "Video"}
                     </button>
                   ))}
-                  <select
-                    value={state.selectedModel}
-                    onChange={(e) => dispatch({ type: "SET_MODEL", model: e.target.value })}
-                    className="rounded-full border border-[var(--line)] bg-white/50 px-3 py-1.5 text-xs outline-none"
-                  >
-                    {models.map((m) => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                  <select
-                    value={state.ratio}
-                    onChange={(e) => dispatch({ type: "SET_RATIO", ratio: e.target.value })}
-                    className="rounded-full border border-[var(--line)] bg-white/50 px-3 py-1.5 text-xs outline-none"
-                  >
-                    {ratios.map((r) => <option key={r} value={r}>{r}</option>)}
-                  </select>
-                  <select
-                    value={state.quality}
-                    onChange={(e) => dispatch({ type: "SET_QUALITY", quality: e.target.value as (typeof qualityOptions)[number] })}
-                    className="rounded-full border border-[var(--line)] bg-white/50 px-3 py-1.5 text-xs outline-none"
-                  >
-                    {qualityOptions.map((q) => <option key={q} value={q}>{q}</option>)}
-                  </select>
+
+                  {/* Model selector */}
+                  <div className="relative">
+                    <select
+                      value={state.selectedModel}
+                      onChange={(e) => dispatch({ type: "SET_MODEL", model: e.target.value })}
+                      className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer"
+                    >
+                      {models.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
+                  </div>
+
+                  {/* Aspect ratio */}
+                  <div className="relative">
+                    <select
+                      value={state.ratio}
+                      onChange={(e) => dispatch({ type: "SET_RATIO", ratio: e.target.value })}
+                      className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer"
+                    >
+                      {ratios.map((r) => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
+                  </div>
+
+                  {/* Quality */}
+                  <div className="relative">
+                    <select
+                      value={state.quality}
+                      onChange={(e) => dispatch({ type: "SET_QUALITY", quality: e.target.value as (typeof qualityOptions)[number] })}
+                      className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer"
+                    >
+                      {qualityOptions.map((q) => <option key={q} value={q}>{q}</option>)}
+                    </select>
+                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
+                  </div>
+
+                  {/* Batch size - only for image mode */}
+                  {state.mode === "image" && (
+                    <div className="relative">
+                      <select
+                        value={state.batch}
+                        onChange={(e) => dispatch({ type: "SET_BATCH", batch: e.target.value })}
+                        className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer"
+                      >
+                        {batchOptions.map((b) => <option key={b} value={b}>{b}x batch</option>)}
+                      </select>
+                      <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
+                    </div>
+                  )}
+
+                  {/* Estimated time */}
+                  <span className="text-[11px] text-[var(--foreground)]/35 ml-1">
+                    {state.mode === "image"
+                      ? `~${state.quality === "Ultra" ? "25" : state.quality === "High" ? "18" : "10"}s`
+                      : `~${state.quality === "Ultra" ? "3m 30s" : state.quality === "High" ? "2m 15s" : "1m 20s"}`}
+                  </span>
+
                   <button
                     onClick={handleGenerate}
                     disabled={state.running || !state.selectedModel || !state.promptText.trim()}
-                    className="ml-auto rounded-full bg-[var(--accent)] px-5 py-2 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+                    className="ml-auto rounded-full bg-[var(--accent)] px-5 py-2 text-xs font-semibold text-white shadow-sm transition hover:opacity-90 disabled:opacity-50"
                   >
                     {state.running ? "Generating..." : "Generate"}
                   </button>
                 </div>
+
+                {/* Image-to-video reference attachment */}
+                {state.mode === "video" && (
+                  <div className="mt-3 flex items-center gap-3 rounded-[16px] border border-dashed border-[var(--accent-warm)]/30 bg-[var(--accent-warm)]/5 px-4 py-3">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-warm)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-60">
+                      <rect x="3" y="3" width="18" height="18" rx="2" />
+                      <circle cx="9" cy="9" r="2" />
+                      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
+                    </svg>
+                    <div className="flex-1 min-w-0">
+                      {selectedReferenceIds.length > 0 ? (
+                        <p className="text-xs text-[var(--foreground)]/60">
+                          <span className="font-medium text-[var(--accent-warm)]">{selectedReferenceIds.length} reference image{selectedReferenceIds.length > 1 ? "s" : ""}</span> attached for image-to-video generation
+                        </p>
+                      ) : (
+                        <p className="text-xs text-[var(--foreground)]/40">
+                          Attach a reference image below to guide video generation from a still frame
+                        </p>
+                      )}
+                    </div>
+                    <label className="cursor-pointer shrink-0 rounded-full border border-[var(--accent-warm)]/30 bg-white/70 px-3 py-1 text-[11px] font-medium text-[var(--accent-warm)] transition hover:bg-white">
+                      {uploading ? "Uploading..." : "Add image"}
+                      <input type="file" accept="image/*" disabled={uploading} onChange={handleUploadFile} className="hidden" />
+                    </label>
+                  </div>
+                )}
 
                 {state.submitError && <p className="mt-3 text-xs text-[var(--danger)]">{state.submitError}</p>}
                 {state.runtimeNotice && <p className="mt-2 text-xs text-[var(--foreground)]/55">{state.runtimeNotice}</p>}
@@ -815,17 +878,23 @@ export function StudioWorkbench({
                 </div>
 
                 <div className="flex flex-wrap gap-2 items-center">
-                  <select value={selectedProjectId ?? "__global__"} onChange={(e) => handleProjectScopeChange(e.target.value)}
-                    className="rounded-full border border-[var(--line)] bg-white/50 px-3 py-1.5 text-xs outline-none">
-                    <option value="__global__">Global</option>
-                    {projectOptions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
-                  <select value={uploadRole} onChange={(e) => setUploadRole(e.target.value === "primary" ? "primary" : "secondary")}
-                    className="rounded-full border border-[var(--line)] bg-white/50 px-3 py-1.5 text-xs outline-none">
-                    <option value="primary">Primary</option>
-                    <option value="secondary">Secondary</option>
-                  </select>
-                  <label className="cursor-pointer rounded-full bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90">
+                  <div className="relative">
+                    <select value={selectedProjectId ?? "__global__"} onChange={(e) => handleProjectScopeChange(e.target.value)}
+                      className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer">
+                      <option value="__global__">Global</option>
+                      {projectOptions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
+                  </div>
+                  <div className="relative">
+                    <select value={uploadRole} onChange={(e) => setUploadRole(e.target.value === "primary" ? "primary" : "secondary")}
+                      className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer">
+                      <option value="primary">Primary</option>
+                      <option value="secondary">Secondary</option>
+                    </select>
+                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
+                  </div>
+                  <label className="cursor-pointer rounded-full bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:opacity-90">
                     {uploading ? "Uploading..." : "Upload"}
                     <input type="file" accept="image/*" disabled={uploading} onChange={handleUploadFile} className="hidden" />
                   </label>
@@ -938,7 +1007,7 @@ export function StudioWorkbench({
             <StatBox value={completedRuns} label="Completed" color="var(--success)" />
             <StatBox value={failedRuns} label="Failed" color="var(--danger)" />
             <StatBox value={runningRuns} label="In progress" color="#4d7cfe" />
-            <StatBox value="18s" label="Avg. runtime" color="var(--foreground)" />
+            <StatBox value={state.mode === "image" ? "18s" : "2m 15s"} label="Avg. runtime" color="var(--foreground)" />
           </div>
         </div>
 
