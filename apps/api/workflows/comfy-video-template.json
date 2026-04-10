@@ -118,7 +118,7 @@
     "inputs": {
       "width": "__WIDTH__",
       "height": "__HEIGHT__",
-      "length": 121,
+      "length": "__LENGTH__",
       "batch_size": 1,
       "vae": [
         "39",
@@ -132,7 +132,7 @@
   },
   "57": {
     "inputs": {
-      "fps": 24,
+      "fps": "__FPS__",
       "images": [
         "8",
         0

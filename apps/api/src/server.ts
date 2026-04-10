@@ -3,6 +3,7 @@ import multipart from "@fastify/multipart";
 import type { MultipartFile } from "@fastify/multipart";
 import Fastify from "fastify";
 import { readFile as readLocalFile } from "node:fs/promises";
+import { Readable } from "node:stream";
 import { dashboardResponse, modelRecommendations, orchestrationStrategy } from "@dreamora/shared";
 import "./env.js";
 import {
@@ -1216,6 +1217,8 @@ app.post<{
     aspectRatio: string;
     quality: "Standard" | "High" | "Ultra";
     batchSize?: number;
+    durationSeconds?: number;
+    fps?: number;
     projectId?: string;
     referenceAssetIds?: string[];
   };
@@ -1236,6 +1239,14 @@ app.post<{
     : [];
   const rawBatch = request.body.batchSize ?? 1;
   const batchSize = Math.max(MIN_BATCH, Math.min(MAX_BATCH, Math.floor(rawBatch)));
+  const durationSeconds =
+    mode === "video" && typeof request.body.durationSeconds === "number"
+      ? request.body.durationSeconds
+      : undefined;
+  const fps =
+    mode === "video" && typeof request.body.fps === "number"
+      ? request.body.fps
+      : undefined;
 
   if (!VALID_MODES.has(mode)) {
     reply.code(400);
@@ -1313,6 +1324,8 @@ app.post<{
       aspectRatio,
       quality,
       batchSize,
+      durationSeconds,
+      fps,
       references
     });
   } catch (error) {
@@ -1416,6 +1429,12 @@ app.get<{
     };
   }
 
+  const outputs = (job.outputs ?? []).map((file, index) => ({
+    kind: file.kind,
+    url: `/api/generation/${job.id}/outputs/${index}`,
+    filename: file.filename
+  }));
+
   return {
     id: job.id,
     runId: job.runId,
@@ -1424,11 +1443,84 @@ app.get<{
     error: job.error ?? null,
     outputSummary: job.outputSummary ?? null,
     workflowPath: job.workflowPath ?? null,
+    outputs,
     policy:
       job.status === "completed" || job.status === "failed"
         ? getRegenerationPolicyDecision(job.id)
         : null
   };
+});
+
+// Proxy a single output file from ComfyUI's /view endpoint to the browser.
+// Streams bytes and forwards Range headers so <video> playback works.
+app.get<{
+  Params: { id: string; index: string };
+}>("/api/generation/:id/outputs/:index", async (request, reply) => {
+  const job = getGenerationJob(request.params.id);
+  if (!job) {
+    reply.code(404);
+    return { error: "Job not found" };
+  }
+
+  const index = Number.parseInt(request.params.index, 10);
+  const files = job.outputs ?? [];
+  if (!Number.isFinite(index) || index < 0 || index >= files.length) {
+    reply.code(404);
+    return { error: "Output not found" };
+  }
+
+  const file = files[index];
+  const comfyUrl = process.env.COMFYUI_URL ?? "http://127.0.0.1:8188";
+  const viewUrl = new URL(`${comfyUrl}/view`);
+  viewUrl.searchParams.set("filename", file.filename);
+  if (file.subfolder) viewUrl.searchParams.set("subfolder", file.subfolder);
+  viewUrl.searchParams.set("type", file.type || "output");
+
+  const headers: Record<string, string> = {};
+  const range = request.headers.range;
+  if (typeof range === "string") {
+    headers.range = range;
+  }
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(viewUrl.toString(), { headers });
+  } catch (error) {
+    reply.code(502);
+    return {
+      error: `Failed to reach ComfyUI: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    };
+  }
+
+  if (!upstream.ok && upstream.status !== 206) {
+    reply.code(upstream.status);
+    return { error: `Comfy /view returned ${upstream.status}` };
+  }
+
+  const contentType =
+    upstream.headers.get("content-type") ??
+    (file.kind === "video" ? "video/mp4" : "image/png");
+  const contentLength = upstream.headers.get("content-length");
+  const contentRange = upstream.headers.get("content-range");
+  const acceptRanges = upstream.headers.get("accept-ranges") ?? "bytes";
+
+  reply.code(upstream.status);
+  reply.header("content-type", contentType);
+  reply.header("accept-ranges", acceptRanges);
+  if (contentLength) reply.header("content-length", contentLength);
+  if (contentRange) reply.header("content-range", contentRange);
+  // Short cache so the browser can re-request with Range for seeking, but results
+  // stay fresh on regeneration (new file path → new URL anyway).
+  reply.header("cache-control", "private, max-age=60");
+
+  if (!upstream.body) {
+    return reply.send(Buffer.alloc(0));
+  }
+
+  // Convert the fetch web ReadableStream to a Node Readable so Fastify can pipe it.
+  return reply.send(Readable.fromWeb(upstream.body as unknown as import("node:stream/web").ReadableStream));
 });
 
 app.get<{

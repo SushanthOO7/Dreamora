@@ -8,6 +8,10 @@ export type GenerationRequest = {
   aspectRatio: string;
   quality: "Standard" | "High" | "Ultra";
   batchSize?: number;
+  /** Video-only. Target clip length in seconds. Clamped to [MIN_VIDEO_DURATION, MAX_VIDEO_DURATION]. */
+  durationSeconds?: number;
+  /** Video-only. Playback frame rate. Clamped to [MIN_VIDEO_FPS, MAX_VIDEO_FPS]. */
+  fps?: number;
   references?: Array<{
     id: string;
     path: string;
@@ -16,8 +20,53 @@ export type GenerationRequest = {
   }>;
 };
 
+// Video generation limits. `length` in Wan22ImageToVideoLatent must be (4k + 1).
+export const MIN_VIDEO_DURATION = 1;
+export const MAX_VIDEO_DURATION = 15;
+export const DEFAULT_VIDEO_DURATION = 5;
+export const MIN_VIDEO_FPS = 16;
+export const MAX_VIDEO_FPS = 60;
+export const DEFAULT_VIDEO_FPS = 24;
+
+/**
+ * Compute the Wan 2.2 latent frame count for a given duration and fps.
+ * Wan22ImageToVideoLatent requires length == 4k + 1. We round to the nearest
+ * valid value so `length / fps` stays close to the requested duration.
+ */
+export function computeWanVideoLength(durationSeconds: number, fps: number): number {
+  const target = Math.max(1, Math.round(durationSeconds * fps));
+  const k = Math.max(1, Math.round((target - 1) / 4));
+  return k * 4 + 1;
+}
+
+function clampVideoDuration(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_VIDEO_DURATION;
+  }
+  return Math.min(MAX_VIDEO_DURATION, Math.max(MIN_VIDEO_DURATION, value));
+}
+
+function clampVideoFps(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_VIDEO_FPS;
+  }
+  return Math.min(MAX_VIDEO_FPS, Math.max(MIN_VIDEO_FPS, Math.round(value)));
+}
+
 export type GenerationBackend = "comfy" | "simulated";
 export type GenerationStatus = "queued" | "running" | "completed" | "failed";
+
+/** One output artifact (image or video) returned by ComfyUI history. */
+export type ComfyOutputFile = {
+  /** Whether this came from the `images` or `gifs`/video array in history. */
+  kind: "image" | "video";
+  /** Comfy filename (leaf only). */
+  filename: string;
+  /** Comfy subfolder; may be empty string. */
+  subfolder: string;
+  /** Comfy type; typically "output". */
+  type: string;
+};
 
 export type GenerationJob = {
   id: string;
@@ -32,11 +81,13 @@ export type GenerationJob = {
   promptId?: string;
   outputSummary?: string;
   workflowPath?: string;
+  outputs?: ComfyOutputFile[];
 };
 
 type ComfyHistoryResult = {
   status: "running" | "completed" | "failed";
   outputCount?: number;
+  outputs?: ComfyOutputFile[];
   error?: string;
 };
 
@@ -261,6 +312,9 @@ function applyWorkflowTokens(
   const steps = qualityToSteps(request.quality);
   const batch = request.mode === "image" ? request.batchSize ?? 1 : 1;
   const seed = randomSeed();
+  const videoFps = clampVideoFps(request.fps);
+  const videoDuration = clampVideoDuration(request.durationSeconds);
+  const videoLength = computeWanVideoLength(videoDuration, videoFps);
   const safePrompt = escapeJsonString(request.prompt);
   const videoClipName = escapeJsonString(
     (process.env.COMFY_VIDEO_CLIP_NAME ?? "umt5_xxl_fp8_e4m3fn_scaled.safetensors").trim() ||
@@ -294,6 +348,8 @@ function applyWorkflowTokens(
     .replaceAll("\"__STEPS__\"", String(steps))
     .replaceAll("\"__BATCH__\"", String(batch))
     .replaceAll("\"__SEED__\"", String(seed))
+    .replaceAll("\"__LENGTH__\"", String(videoLength))
+    .replaceAll("\"__FPS__\"", String(videoFps))
     .replaceAll("__PROMPT__", safePrompt)
     .replaceAll("__MODEL__", request.model)
     .replaceAll("__WIDTH__", String(width))
@@ -301,6 +357,8 @@ function applyWorkflowTokens(
     .replaceAll("__STEPS__", String(steps))
     .replaceAll("__BATCH__", String(batch))
     .replaceAll("__SEED__", String(seed))
+    .replaceAll("__LENGTH__", String(videoLength))
+    .replaceAll("__FPS__", String(videoFps))
     .replaceAll("__VIDEO_CLIP_NAME__", videoClipName)
     .replaceAll("__VIDEO_VAE_NAME__", videoVaeName)
     .replaceAll("__RUN_ID__", runId);
@@ -413,21 +471,38 @@ async function fetchComfyHistory(promptId: string): Promise<ComfyHistoryResult> 
     return { status: "running" };
   }
 
-  const outputs = run.outputs ? Object.values(run.outputs) : [];
-  let outputCount = 0;
-  for (const output of outputs) {
+  const nodeOutputs = run.outputs ? Object.values(run.outputs) : [];
+  const collectedFiles: ComfyOutputFile[] = [];
+
+  const collect = (arr: unknown, kind: ComfyOutputFile["kind"]): void => {
+    if (!Array.isArray(arr)) return;
+    for (const entry of arr) {
+      const item = entry as Record<string, unknown>;
+      const filename = typeof item.filename === "string" ? item.filename : null;
+      if (!filename) continue;
+      collectedFiles.push({
+        kind,
+        filename,
+        subfolder: typeof item.subfolder === "string" ? item.subfolder : "",
+        type: typeof item.type === "string" ? item.type : "output"
+      });
+    }
+  };
+
+  for (const output of nodeOutputs) {
     const out = output as Record<string, unknown>;
-    if (Array.isArray(out.images)) {
-      outputCount += out.images.length;
-    }
-    if (Array.isArray(out.gifs)) {
-      outputCount += out.gifs.length;
-    }
+    // Image nodes (SaveImage) produce `images`; video nodes (SaveVideo, VHS_VideoCombine) produce
+    // `videos` or `gifs`/`files` depending on Comfy version — cover all three.
+    collect(out.images, "image");
+    collect(out.videos, "video");
+    collect(out.gifs, "video");
+    collect(out.files, "video");
   }
 
   return {
     status: "completed",
-    outputCount
+    outputCount: collectedFiles.length,
+    outputs: collectedFiles
   };
 }
 
@@ -603,7 +678,8 @@ export function startComfyPolling(
         ...current,
         status: "completed",
         completedAt: endTime,
-        outputSummary: `${result.outputCount ?? 0} artifact(s)`
+        outputSummary: `${result.outputCount ?? 0} artifact(s)`,
+        outputs: result.outputs ?? []
       };
       jobs.set(job.id, done);
       clearJobPoller(job.id);

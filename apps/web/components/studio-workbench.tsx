@@ -11,99 +11,42 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import {
   deleteAsset,
   deriveModelsFromProviders,
-  getGenerationPlan,
   getGenerationStatus,
-  getStudioSuggestions,
   listAssets,
   scoreRun,
   startGeneration,
   uploadAsset
 } from "../lib/client-api";
-import type {
-  GenerationPlan,
-  ScoreResponse,
-  StudioAsset
-} from "../lib/client-api";
+import type { GenerationOutputRef, StudioAsset } from "../lib/client-api";
 
 const imageRatios = ["1:1", "4:5", "3:4", "16:9", "9:16"];
 const videoRatios = ["16:9", "9:16"];
 const qualityOptions = ["Standard", "High", "Ultra"] as const;
 const batchOptions = ["1", "2", "4", "8"];
+const videoDurationOptions = [5, 10, 15] as const;
+const videoFpsOptions = [16, 24, 30, 60] as const;
 const MAX_REFERENCES = 5;
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
-const workflowStages = [
-  {
-    title: "Prompt accepted",
-    type: "Trigger",
-    badge: "Records",
-    note: "The generation request is serialized with model, aspect ratio, and quality."
-  },
-  {
-    title: "Provider routing",
-    type: "Agent",
-    badge: "Router",
-    note: "Local and third-party credentials are checked before queue placement."
-  },
-  {
-    title: "Model execution",
-    type: "Process",
-    badge: "Inference",
-    note: "The selected image or video model starts inference on the active provider."
-  },
-  {
-    title: "Asset packaging",
-    type: "Output",
-    badge: "Delivery",
-    note: "Outputs, previews, and usage metadata are prepared for review."
-  }
-];
-
-type MemoryPrompt = {
-  id: string;
-  title: string;
-  summary: string;
-  tags: string[];
-  score: number;
-};
-
-type MemoryRun = {
-  id: string;
-  title: string;
-  engine: string;
-  duration: string;
-  tokensUsed: number;
-  aspectRatio: string | null;
-  quality: string | null;
-};
-
-type RecommendedSettings = {
-  model: string;
-  aspectRatio: string;
-  quality: "Standard" | "High" | "Ultra";
-  batchSize: number;
-  averageTokens: number;
-};
+type PreviewState = {
+  runId: string;
+  outputs: GenerationOutputRef[];
+} | null;
 
 type StudioState = {
   mode: "image" | "video";
   ratio: string;
   quality: (typeof qualityOptions)[number];
   batch: string;
+  videoDuration: (typeof videoDurationOptions)[number];
+  videoFps: (typeof videoFpsOptions)[number];
   selectedModel: string;
   promptText: string;
   running: boolean;
   submitError: string;
   runtimeNotice: string;
-  suggestionError: string;
-  suggesting: boolean;
   runs: RunSummary[];
-  memoryPrompts: MemoryPrompt[];
-  memoryRuns: MemoryRun[];
-  recommendedSettings: RecommendedSettings | null;
-  plan: GenerationPlan | null;
-  planLoading: boolean;
-  scoringRunId: string | null;
-  lastScoreResult: ScoreResponse | null;
+  preview: PreviewState;
 };
 
 type StudioAction =
@@ -111,6 +54,8 @@ type StudioAction =
   | { type: "SET_RATIO"; ratio: string }
   | { type: "SET_QUALITY"; quality: (typeof qualityOptions)[number] }
   | { type: "SET_BATCH"; batch: string }
+  | { type: "SET_VIDEO_DURATION"; duration: (typeof videoDurationOptions)[number] }
+  | { type: "SET_VIDEO_FPS"; fps: (typeof videoFpsOptions)[number] }
   | { type: "SET_MODEL"; model: string }
   | { type: "SET_PROMPT"; text: string }
   | { type: "START_GENERATE" }
@@ -118,17 +63,9 @@ type StudioAction =
   | { type: "GENERATION_POLL_UPDATE"; runId: string; updates: Partial<RunSummary> }
   | { type: "GENERATION_DONE" }
   | { type: "GENERATION_ERROR"; error: string }
-  | { type: "START_SUGGEST" }
-  | { type: "SUGGEST_SUCCESS"; prompts: MemoryPrompt[]; runs: MemoryRun[]; settings: RecommendedSettings }
-  | { type: "SUGGEST_ERROR"; error: string }
-  | { type: "APPLY_SETTINGS" }
   | { type: "SET_NOTICE"; notice: string }
-  | { type: "PLAN_LOADING" }
-  | { type: "PLAN_LOADED"; plan: GenerationPlan }
-  | { type: "PLAN_ERROR" }
-  | { type: "APPLY_PLAN" }
-  | { type: "SCORE_SUBMITTED"; result: ScoreResponse }
-  | { type: "DISMISS_SCORE" };
+  | { type: "PREVIEW_SET"; runId: string; outputs: GenerationOutputRef[] }
+  | { type: "PREVIEW_CLEAR" };
 
 function studioReducer(state: StudioState, action: StudioAction): StudioState {
   switch (action.type) {
@@ -137,10 +74,11 @@ function studioReducer(state: StudioState, action: StudioAction): StudioState {
         ...state,
         mode: action.mode,
         selectedModel: action.model,
-        ratio: "16:9",
-        promptText: action.mode === "image"
-          ? "Premium product scene with controlled reflections, sculpted natural light, elegant material detail, and a restrained editorial composition."
-          : "Luxury product reveal with a slow forward push, clean highlight motion, soft environmental reflections, and stable premium pacing."
+        ratio: action.mode === "image" ? "1:1" : "16:9",
+        promptText:
+          action.mode === "image"
+            ? "Premium product scene with controlled reflections, sculpted natural light, and a restrained editorial composition."
+            : "Luxury product reveal with a slow forward push, clean highlight motion, and stable premium pacing."
       };
     case "SET_RATIO":
       return { ...state, ratio: action.ratio };
@@ -148,6 +86,10 @@ function studioReducer(state: StudioState, action: StudioAction): StudioState {
       return { ...state, quality: action.quality };
     case "SET_BATCH":
       return { ...state, batch: action.batch };
+    case "SET_VIDEO_DURATION":
+      return { ...state, videoDuration: action.duration };
+    case "SET_VIDEO_FPS":
+      return { ...state, videoFps: action.fps };
     case "SET_MODEL":
       return { ...state, selectedModel: action.model };
     case "SET_PROMPT":
@@ -157,7 +99,7 @@ function studioReducer(state: StudioState, action: StudioAction): StudioState {
     case "GENERATION_STARTED":
       return {
         ...state,
-        runs: [action.run, ...state.runs].slice(0, 10),
+        runs: [action.run, ...state.runs].slice(0, 12),
         runtimeNotice: action.notice
       };
     case "GENERATION_POLL_UPDATE":
@@ -171,51 +113,15 @@ function studioReducer(state: StudioState, action: StudioAction): StudioState {
       return { ...state, running: false };
     case "GENERATION_ERROR":
       return { ...state, running: false, submitError: action.error };
-    case "START_SUGGEST":
-      return { ...state, suggesting: true, suggestionError: "" };
-    case "SUGGEST_SUCCESS":
-      return {
-        ...state,
-        suggesting: false,
-        memoryPrompts: action.prompts,
-        memoryRuns: action.runs,
-        recommendedSettings: action.settings,
-        runtimeNotice: "Prompt memory analysis updated from successful runs."
-      };
-    case "SUGGEST_ERROR":
-      return { ...state, suggesting: false, suggestionError: action.error };
-    case "APPLY_SETTINGS":
-      if (!state.recommendedSettings) return state;
-      return {
-        ...state,
-        selectedModel: state.recommendedSettings.model,
-        ratio: state.recommendedSettings.aspectRatio,
-        quality: state.recommendedSettings.quality,
-        batch: state.mode === "image" ? String(state.recommendedSettings.batchSize) : state.batch,
-        runtimeNotice: "Applied recommended settings from memory."
-      };
     case "SET_NOTICE":
       return { ...state, runtimeNotice: action.notice };
-    case "PLAN_LOADING":
-      return { ...state, planLoading: true, plan: null };
-    case "PLAN_LOADED":
-      return { ...state, planLoading: false, plan: action.plan };
-    case "PLAN_ERROR":
-      return { ...state, planLoading: false, runtimeNotice: "Could not generate plan." };
-    case "APPLY_PLAN":
-      if (!state.plan) return state;
+    case "PREVIEW_SET":
       return {
         ...state,
-        selectedModel: state.plan.recommendedSettings.model,
-        ratio: state.plan.recommendedSettings.aspectRatio,
-        quality: state.plan.recommendedSettings.quality,
-        batch: state.mode === "image" ? String(state.plan.recommendedSettings.batchSize) : state.batch,
-        runtimeNotice: `Plan applied: ${state.plan.steps.filter((s) => !s.optional).length} required steps, ${state.plan.estimatedTotalTokens.toLocaleString()} estimated tokens.`
+        preview: { runId: action.runId, outputs: action.outputs }
       };
-    case "SCORE_SUBMITTED":
-      return { ...state, lastScoreResult: action.result, scoringRunId: null };
-    case "DISMISS_SCORE":
-      return { ...state, lastScoreResult: null };
+    case "PREVIEW_CLEAR":
+      return { ...state, preview: null };
     default:
       return state;
   }
@@ -249,37 +155,27 @@ export function StudioWorkbench({
 
   const [state, dispatch] = useReducer(studioReducer, {
     mode: "image",
-    ratio: "16:9",
+    ratio: "1:1",
     quality: "High",
     batch: "4",
+    videoDuration: 5,
+    videoFps: 24,
     selectedModel: modelGroups.imageModels[0] ?? "Dreamora FLUX local",
     promptText:
-      "Premium product scene with controlled reflections, sculpted natural light, elegant material detail, and a restrained editorial composition.",
+      "Premium product scene with controlled reflections, sculpted natural light, and a restrained editorial composition.",
     running: false,
     submitError: "",
     runtimeNotice: "",
-    suggestionError: "",
-    suggesting: false,
     runs: initialRuns,
-    memoryPrompts: [],
-    memoryRuns: [],
-    recommendedSettings: null,
-    plan: null,
-    planLoading: false,
-    scoringRunId: null,
-    lastScoreResult: null
+    preview: null
   });
 
-  const [activeTab, setActiveTab] = useState<"editor" | "runs">("editor");
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [assets, setAssets] = useState<StudioAsset[]>([]);
   const [selectedReferenceIds, setSelectedReferenceIds] = useState<string[]>([]);
-  const [assetLoading, setAssetLoading] = useState(false);
   const [assetError, setAssetError] = useState("");
   const [uploading, setUploading] = useState(false);
-  const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
-  const [uploadRole, setUploadRole] = useState<"primary" | "secondary">("secondary");
-  const [uploadWeight, setUploadWeight] = useState(0.5);
+  const [showReferences, setShowReferences] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
@@ -312,8 +208,6 @@ export function StudioWorkbench({
 
   const refreshAssets = useCallback(
     async (scope: "project" | "global", projectId: string | null) => {
-      setAssetLoading(true);
-      setAssetError("");
       try {
         const nextAssets = await listAssets(scope, projectId ?? undefined);
         if (!mountedRef.current) return;
@@ -324,8 +218,6 @@ export function StudioWorkbench({
       } catch {
         if (!mountedRef.current) return;
         setAssetError("Could not load reference library.");
-      } finally {
-        if (mountedRef.current) setAssetLoading(false);
       }
     },
     []
@@ -354,14 +246,13 @@ export function StudioWorkbench({
     const formData = new FormData();
     formData.set("file", file);
     formData.set("scope", assetScope);
-    formData.set("role", uploadRole);
-    formData.set("weight", String(uploadWeight));
+    formData.set("role", "secondary");
+    formData.set("weight", "0.5");
     if (selectedProjectId) formData.set("projectId", selectedProjectId);
     try {
       await uploadAsset(formData);
       if (!mountedRef.current) return;
       await refreshAssets(assetScope, selectedProjectId);
-      dispatch({ type: "SET_NOTICE", notice: "Reference image uploaded to the local library." });
     } catch {
       if (!mountedRef.current) return;
       setAssetError("Could not upload reference image.");
@@ -370,39 +261,30 @@ export function StudioWorkbench({
     }
   }
 
-  async function handleDeleteAsset(assetId: string, reason?: string) {
-    const confirmed = window.confirm(reason ?? "This permanently removes the image from the library and deletes it from local disk. Continue?");
+  async function handleRemoveAsset(assetId: string) {
+    const confirmed = window.confirm("Remove this reference permanently?");
     if (!confirmed) return;
-    setDeletingAssetId(assetId);
-    setAssetError("");
     try {
       await deleteAsset(assetId);
       if (!mountedRef.current) return;
       setAssets((prev) => prev.filter((a) => a.id !== assetId));
       setSelectedReferenceIds((prev) => prev.filter((id) => id !== assetId));
-      dispatch({ type: "SET_NOTICE", notice: "Reference removed permanently from library and local disk." });
     } catch {
       if (!mountedRef.current) return;
       setAssetError("Could not delete reference image.");
-    } finally {
-      if (mountedRef.current) setDeletingAssetId(null);
     }
   }
 
-  async function handleSelectAsset(asset: StudioAsset) {
+  function handleToggleAsset(asset: StudioAsset) {
+    setAssetError("");
     if (selectedReferenceIds.includes(asset.id)) {
-      await handleDeleteAsset(asset.id, "Unselecting this reference permanently deletes it from local disk and library. Continue?");
+      setSelectedReferenceIds((prev) => prev.filter((id) => id !== asset.id));
       return;
     }
     if (selectedReferenceIds.length >= MAX_REFERENCES) {
-      setAssetError(`You can select at most ${MAX_REFERENCES} references.`);
+      setAssetError(`Max ${MAX_REFERENCES} references.`);
       return;
     }
-    if (asset.role === "primary" && selectedPrimaryCount >= 1) {
-      setAssetError("Only one primary reference can be selected.");
-      return;
-    }
-    setAssetError("");
     setSelectedReferenceIds((prev) => [...prev, asset.id]);
   }
 
@@ -417,50 +299,19 @@ export function StudioWorkbench({
     else handleMode("image");
   }
 
-  async function handleAnalyzePrompt() {
-    dispatch({ type: "START_SUGGEST" });
-    try {
-      const result = await getStudioSuggestions(state.mode, state.promptText);
-      if (!mountedRef.current) return;
-      dispatch({
-        type: "SUGGEST_SUCCESS",
-        prompts: result.memory.promptMatches,
-        runs: result.memory.topRuns.map((run) => ({
-          id: run.id, title: run.title, engine: run.engine,
-          duration: run.duration, tokensUsed: run.tokensUsed,
-          aspectRatio: run.aspectRatio, quality: run.quality
-        })),
-        settings: result.recommendations
-      });
-    } catch {
-      if (!mountedRef.current) return;
-      dispatch({ type: "SUGGEST_ERROR", error: "Could not fetch prompt memory recommendations." });
-    }
-  }
-
-  async function handleGetPlan() {
-    dispatch({ type: "PLAN_LOADING" });
-    try {
-      const plan = await getGenerationPlan(state.promptText, state.mode);
-      if (!mountedRef.current) return;
-      dispatch({ type: "PLAN_LOADED", plan });
-    } catch {
-      if (!mountedRef.current) return;
-      dispatch({ type: "PLAN_ERROR" });
-    }
-  }
-
   async function handleScoreRun(runId: string, score: number) {
     try {
-      const result = await scoreRun(runId, score);
+      await scoreRun(runId, score);
       if (!mountedRef.current) return;
-      dispatch({ type: "SCORE_SUBMITTED", result });
-    } catch { /* scoring is non-critical */ }
+      dispatch({ type: "SET_NOTICE", notice: `Scored ${score}/5.` });
+    } catch {
+      /* scoring is non-critical */
+    }
   }
 
   async function pollGeneration(jobId: string, runId: string, signal: AbortSignal) {
     let attempts = 0;
-    const maxAttempts = 120;
+    const maxAttempts = 240;
     while (attempts < maxAttempts && !signal.aborted) {
       attempts += 1;
       await new Promise((resolve) => { window.setTimeout(resolve, 2500); });
@@ -469,18 +320,23 @@ export function StudioWorkbench({
         const status = await getGenerationStatus(jobId);
         if (signal.aborted || !mountedRef.current) return;
         if (status.status === "completed") {
-          dispatch({ type: "GENERATION_POLL_UPDATE", runId, updates: { status: "Completed", output: status.outputSummary ?? undefined } });
-          if (status.policy?.shouldRegenerate) {
-            dispatch({ type: "SET_NOTICE", notice: `Policy recommendation: retry suggested (${status.policy.reasons[0]?.message ?? "Policy check requested regeneration."})` });
+          dispatch({
+            type: "GENERATION_POLL_UPDATE",
+            runId,
+            updates: { status: "Completed", output: status.outputSummary ?? undefined }
+          });
+          if (status.outputs && status.outputs.length > 0) {
+            dispatch({ type: "PREVIEW_SET", runId, outputs: status.outputs });
           }
           dispatch({ type: "GENERATION_DONE" });
           return;
         }
         if (status.status === "failed") {
-          dispatch({ type: "GENERATION_POLL_UPDATE", runId, updates: { status: "Failed", duration: "Failed", output: status.error ?? "Generation failed" } });
-          if (status.policy?.shouldRegenerate) {
-            dispatch({ type: "SET_NOTICE", notice: `Policy recommendation: retry suggested (${status.policy.reasons[0]?.message ?? "Policy check requested regeneration."})` });
-          }
+          dispatch({
+            type: "GENERATION_POLL_UPDATE",
+            runId,
+            updates: { status: "Failed", duration: "Failed", output: status.error ?? "Generation failed" }
+          });
           dispatch({ type: "GENERATION_ERROR", error: status.error ?? "Generation failed." });
           return;
         }
@@ -505,13 +361,18 @@ export function StudioWorkbench({
     abortRef.current = controller;
     dispatch({ type: "START_GENERATE" });
     const now = new Date();
-    const runTitle = state.mode === "image" ? `Image generation ${now.toLocaleTimeString()}` : `Video generation ${now.toLocaleTimeString()}`;
+    const runTitle = state.mode === "image"
+      ? `Image ${now.toLocaleTimeString()}`
+      : `Video ${now.toLocaleTimeString()}`;
     try {
       const started = await startGeneration({
         mode: state.mode, prompt: state.promptText, model: state.selectedModel,
         aspectRatio: state.ratio, quality: state.quality,
         batchSize: state.mode === "image" ? Number(state.batch) : 1,
-        projectId: selectedProjectId ?? undefined, referenceAssetIds: selectedReferenceIds
+        durationSeconds: state.mode === "video" ? state.videoDuration : undefined,
+        fps: state.mode === "video" ? state.videoFps : undefined,
+        projectId: selectedProjectId ?? undefined,
+        referenceAssetIds: selectedReferenceIds
       });
       if (controller.signal.aborted || !mountedRef.current) return;
       const provisionalRun: RunSummary = {
@@ -520,555 +381,324 @@ export function StudioWorkbench({
         output: state.mode === "image" ? `${state.batch} image(s)` : `${state.ratio} clip`,
         mode: state.mode
       };
-      let notice = "";
-      if (started.backend === "simulated" && started.fallbackReason) notice = `ComfyUI fallback: ${started.fallbackReason}`;
-      else if (started.backend === "simulated") notice = "ComfyUI not enabled; using simulated backend.";
-      else notice = `ComfyUI backend active (${started.workflowPath ?? "unknown"}).`;
+      const notice = started.backend === "simulated"
+        ? (started.fallbackReason ? `Simulated (fallback: ${started.fallbackReason})` : "Simulated backend")
+        : "";
       dispatch({ type: "GENERATION_STARTED", run: provisionalRun, notice });
       await pollGeneration(started.jobId, started.runId, controller.signal);
     } catch (error) {
       if (!mountedRef.current) return;
-      dispatch({ type: "GENERATION_ERROR", error: error instanceof Error && error.message ? error.message : "Could not start generation." });
+      dispatch({
+        type: "GENERATION_ERROR",
+        error: error instanceof Error && error.message ? error.message : "Could not start generation."
+      });
     }
   }
 
-  const completedRuns = state.runs.filter((r) => r.status === "Completed").length;
-  const failedRuns = state.runs.filter((r) => r.status === "Failed").length;
-  const runningRuns = state.runs.filter((r) => r.status === "Running").length;
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
+  const canGenerate = !state.running && !!state.selectedModel && state.promptText.trim().length > 0;
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[1fr_320px]">
-      {/* ─── Main workflow area ─────────────────────── */}
-      <div className="space-y-5">
-        {/* Top bar with tabs and live toggle */}
-        <div className="panel-strong rounded-[24px] px-5 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-1 rounded-full border border-[var(--line)] bg-white/40 p-1">
-            <button
-              onClick={() => setActiveTab("editor")}
-              className={`rounded-full px-4 py-1.5 text-sm font-medium transition-all ${
-                activeTab === "editor"
-                  ? "bg-[var(--accent)] text-white shadow-sm"
-                  : "text-[var(--foreground)]/50 hover:text-[var(--foreground)]"
-              }`}
-            >
-              Editor
-            </button>
-            <button
-              onClick={() => setActiveTab("runs")}
-              className={`flex items-center gap-2 rounded-full px-4 py-1.5 text-sm font-medium transition-all ${
-                activeTab === "runs"
-                  ? "bg-[var(--accent)] text-white shadow-sm"
-                  : "text-[var(--foreground)]/50 hover:text-[var(--foreground)]"
-              }`}
-            >
-              Runs
-              <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[10px]">
-                {state.runs.length}
-              </span>
-            </button>
-          </div>
+    <div className="mx-auto w-full max-w-[1100px] space-y-6">
+      {/* ─── Preview ─────────────────────────────── */}
+      <PreviewPanel
+        preview={state.preview}
+        running={state.running}
+        onClear={() => dispatch({ type: "PREVIEW_CLEAR" })}
+      />
 
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <span className={`h-2 w-2 rounded-full ${state.running ? "bg-[var(--success)] animate-pulse" : "bg-[var(--foreground)]/20"}`} />
-              <span className="text-xs font-medium text-[var(--foreground)]/50">
-                {state.running ? "Live" : "Idle"}
-              </span>
-            </div>
-            <div className={`relative h-6 w-11 cursor-pointer rounded-full transition-colors ${state.running ? "bg-[var(--success)]" : "bg-[var(--foreground)]/15"}`}>
-              <div className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all ${state.running ? "left-[22px]" : "left-0.5"}`} />
-            </div>
-          </div>
-        </div>
+      {/* ─── Prompt + Generate ─────────────────── */}
+      <div className="panel-strong rounded-[28px] p-6">
+        <textarea
+          value={state.promptText}
+          onChange={(e) => dispatch({ type: "SET_PROMPT", text: e.target.value })}
+          placeholder="Describe what you want to create..."
+          className="w-full min-h-[88px] resize-none rounded-[18px] border border-[var(--line)] bg-white/60 px-4 py-3 text-sm leading-6 text-[var(--foreground)]/80 outline-none placeholder:text-[var(--foreground)]/25 transition focus:border-[var(--accent-warm)]/30 focus:bg-white/80"
+        />
 
-        <AnimatePresence mode="wait">
-          {activeTab === "editor" ? (
-            <motion.div
-              key="editor"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.25 }}
-              className="space-y-5"
-            >
-              {/* ─── Trigger node: Prompt input ────────── */}
-              <div className="panel-strong rounded-[28px] p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--accent-warm)]/15">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-warm)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="12" cy="12" r="10" />
-                      <path d="M12 8v8M8 12h8" />
-                    </svg>
-                  </div>
-                  <span className="text-xs font-medium text-[var(--foreground)]/40 uppercase tracking-wider">Trigger</span>
-                  <span className="ml-auto rounded-full border border-[var(--line)] bg-white/60 px-2.5 py-0.5 text-[11px] text-[var(--foreground)]/45">
-                    {state.mode === "image" ? "Image" : "Video"}
-                  </span>
-                </div>
-
-                <textarea
-                  value={state.promptText}
-                  onChange={(e) => dispatch({ type: "SET_PROMPT", text: e.target.value })}
-                  placeholder="Describe what you want to create..."
-                  className="w-full min-h-[100px] resize-none rounded-[20px] border border-[var(--line)] bg-white/60 px-5 py-4 text-base leading-7 text-[var(--foreground)]/75 outline-none placeholder:text-[var(--foreground)]/25 transition focus:border-[var(--accent-warm)]/30 focus:bg-white/80"
-                />
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {promptPresets.slice(0, 3).map((preset) => (
-                    <button
-                      key={preset.id ?? preset.title}
-                      onClick={() => applyPreset(preset)}
-                      className="rounded-full border border-[var(--line)] bg-white/50 px-3 py-1 text-xs text-[var(--foreground)]/50 transition hover:bg-white/80 hover:text-[var(--foreground)]"
-                    >
-                      {preset.title}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Settings bar */}
-                <div className="mt-4 flex flex-wrap items-center gap-2">
-                  {(["image", "video"] as const).map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => handleMode(m)}
-                      className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition ${
-                        state.mode === m
-                          ? "bg-[var(--accent)] text-white shadow-sm"
-                          : "border border-[var(--line)] bg-white/50 text-[var(--foreground)]/55 hover:bg-white/80"
-                      }`}
-                    >
-                      {m === "image" ? "Image" : "Video"}
-                    </button>
-                  ))}
-
-                  {/* Model selector */}
-                  <div className="relative">
-                    <select
-                      value={state.selectedModel}
-                      onChange={(e) => dispatch({ type: "SET_MODEL", model: e.target.value })}
-                      className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer"
-                    >
-                      {models.map((m) => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
-                  </div>
-
-                  {/* Aspect ratio */}
-                  <div className="relative">
-                    <select
-                      value={state.ratio}
-                      onChange={(e) => dispatch({ type: "SET_RATIO", ratio: e.target.value })}
-                      className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer"
-                    >
-                      {ratios.map((r) => <option key={r} value={r}>{r}</option>)}
-                    </select>
-                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
-                  </div>
-
-                  {/* Quality */}
-                  <div className="relative">
-                    <select
-                      value={state.quality}
-                      onChange={(e) => dispatch({ type: "SET_QUALITY", quality: e.target.value as (typeof qualityOptions)[number] })}
-                      className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer"
-                    >
-                      {qualityOptions.map((q) => <option key={q} value={q}>{q}</option>)}
-                    </select>
-                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
-                  </div>
-
-                  {/* Batch size - only for image mode */}
-                  {state.mode === "image" && (
-                    <div className="relative">
-                      <select
-                        value={state.batch}
-                        onChange={(e) => dispatch({ type: "SET_BATCH", batch: e.target.value })}
-                        className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer"
-                      >
-                        {batchOptions.map((b) => <option key={b} value={b}>{b}x batch</option>)}
-                      </select>
-                      <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
-                    </div>
-                  )}
-
-                  {/* Estimated time */}
-                  <span className="text-[11px] text-[var(--foreground)]/35 ml-1">
-                    {state.mode === "image"
-                      ? `~${state.quality === "Ultra" ? "25" : state.quality === "High" ? "18" : "10"}s`
-                      : `~${state.quality === "Ultra" ? "3m 30s" : state.quality === "High" ? "2m 15s" : "1m 20s"}`}
-                  </span>
-
-                  <button
-                    onClick={handleGenerate}
-                    disabled={state.running || !state.selectedModel || !state.promptText.trim()}
-                    className="ml-auto rounded-full bg-[var(--accent)] px-5 py-2 text-xs font-semibold text-white shadow-sm transition hover:opacity-90 disabled:opacity-50"
-                  >
-                    {state.running ? "Generating..." : "Generate"}
-                  </button>
-                </div>
-
-                {/* Image-to-video reference attachment */}
-                {state.mode === "video" && (
-                  <div className="mt-3 flex items-center gap-3 rounded-[16px] border border-dashed border-[var(--accent-warm)]/30 bg-[var(--accent-warm)]/5 px-4 py-3">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-warm)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-60">
-                      <rect x="3" y="3" width="18" height="18" rx="2" />
-                      <circle cx="9" cy="9" r="2" />
-                      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
-                    </svg>
-                    <div className="flex-1 min-w-0">
-                      {selectedReferenceIds.length > 0 ? (
-                        <p className="text-xs text-[var(--foreground)]/60">
-                          <span className="font-medium text-[var(--accent-warm)]">{selectedReferenceIds.length} reference image{selectedReferenceIds.length > 1 ? "s" : ""}</span> attached for image-to-video generation
-                        </p>
-                      ) : (
-                        <p className="text-xs text-[var(--foreground)]/40">
-                          Attach a reference image below to guide video generation from a still frame
-                        </p>
-                      )}
-                    </div>
-                    <label className="cursor-pointer shrink-0 rounded-full border border-[var(--accent-warm)]/30 bg-white/70 px-3 py-1 text-[11px] font-medium text-[var(--accent-warm)] transition hover:bg-white">
-                      {uploading ? "Uploading..." : "Add image"}
-                      <input type="file" accept="image/*" disabled={uploading} onChange={handleUploadFile} className="hidden" />
-                    </label>
-                  </div>
-                )}
-
-                {state.submitError && <p className="mt-3 text-xs text-[var(--danger)]">{state.submitError}</p>}
-                {state.runtimeNotice && <p className="mt-2 text-xs text-[var(--foreground)]/55">{state.runtimeNotice}</p>}
-              </div>
-
-              {/* ─── Workflow nodes ─────────────────────── */}
-              <div className="relative pl-8">
-                {/* Vertical connector line */}
-                <div className="absolute left-[29px] top-0 bottom-0 w-[2px] bg-gradient-to-b from-[var(--success)] via-[var(--accent-warm)]/40 to-transparent" />
-
-                {workflowStages.map((stage, i) => (
-                  <motion.div
-                    key={stage.title}
-                    initial={{ opacity: 0, x: -16 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.1 + i * 0.1, duration: 0.4, ease: [0.25, 0.1, 0.25, 1] }}
-                    className="relative mb-5 last:mb-0"
-                  >
-                    {/* Node dot */}
-                    <div className={`absolute -left-8 top-5 flex h-5 w-5 items-center justify-center rounded-full border-2 ${
-                      state.running
-                        ? "border-[var(--success)] bg-[var(--success-soft)]"
-                        : "border-[var(--line-strong)] bg-white"
-                    }`}>
-                      {state.running && (
-                        <motion.div
-                          className="h-2 w-2 rounded-full bg-[var(--success)]"
-                          animate={{ scale: [1, 1.4, 1], opacity: [1, 0.6, 1] }}
-                          transition={{ repeat: Infinity, duration: 1.5, delay: i * 0.2 }}
-                        />
-                      )}
-                    </div>
-
-                    <motion.div
-                      className="panel rounded-[22px] px-5 py-4 transition-shadow"
-                      whileHover={{ y: -1, boxShadow: "0 16px 52px rgba(30, 24, 16, 0.08)" }}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-[var(--line)] bg-white/80">
-                            <NodeIcon type={stage.type} />
-                          </div>
-                          <div>
-                            <p className="text-sm font-semibold text-[var(--foreground)]">{stage.title}</p>
-                            <p className="text-[11px] text-[var(--foreground)]/40">{stage.note}</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="rounded-full border border-[var(--line)] bg-white/60 px-2.5 py-0.5 text-[10px] font-medium text-[var(--foreground)]/45">
-                            {stage.badge}
-                          </span>
-                          {state.running ? (
-                            <motion.span
-                              initial={{ opacity: 0, scale: 0.8 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              className="rounded-full bg-[var(--success-soft)] border border-[var(--success)]/20 px-2.5 py-0.5 text-[10px] font-medium text-[var(--success)]"
-                            >
-                              {i < workflowStages.length - 1 ? "Completed" : "Processing"}
-                            </motion.span>
-                          ) : (
-                            <span className="rounded-full bg-[var(--foreground)]/5 px-2.5 py-0.5 text-[10px] text-[var(--foreground)]/35">
-                              Ready
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </motion.div>
-                  </motion.div>
-                ))}
-              </div>
-
-              {/* ─── Extra tools row ───────────────────── */}
-              <div className="flex flex-wrap gap-3">
-                <button
-                  onClick={handleAnalyzePrompt}
-                  disabled={state.suggesting || !state.promptText.trim()}
-                  className="panel rounded-[18px] px-4 py-2.5 text-xs font-medium text-[var(--foreground)]/60 transition hover:text-[var(--foreground)] disabled:opacity-50"
-                >
-                  {state.suggesting ? "Analyzing..." : "Analyze Prompt"}
-                </button>
-                <button
-                  onClick={() => dispatch({ type: "APPLY_SETTINGS" })}
-                  disabled={!state.recommendedSettings}
-                  className="panel rounded-[18px] px-4 py-2.5 text-xs font-medium text-[var(--foreground)]/60 transition hover:text-[var(--foreground)] disabled:opacity-50"
-                >
-                  Apply Best Settings
-                </button>
-                <button
-                  onClick={handleGetPlan}
-                  disabled={state.planLoading || !state.promptText.trim()}
-                  className="panel rounded-[18px] px-4 py-2.5 text-xs font-medium text-[var(--foreground)]/60 transition hover:text-[var(--foreground)] disabled:opacity-50"
-                >
-                  {state.planLoading ? "Planning..." : "Generate Plan"}
-                </button>
-              </div>
-
-              {state.suggestionError && <p className="text-xs text-[var(--danger)]">{state.suggestionError}</p>}
-
-              {/* Plan display */}
-              {state.plan && (
-                <motion.div
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="panel rounded-[24px] p-5"
-                >
-                  <div className="flex items-center justify-between mb-3">
-                    <p className="text-sm font-semibold">Generation Plan</p>
-                    <button
-                      onClick={() => dispatch({ type: "APPLY_PLAN" })}
-                      className="rounded-full bg-[var(--accent)] px-3 py-1 text-[11px] font-medium text-white"
-                    >
-                      Apply
-                    </button>
-                  </div>
-                  <p className="text-xs text-[var(--foreground)]/45 mb-3">{state.plan.reasoning}</p>
-                  <div className="space-y-2">
-                    {state.plan.steps.map((step) => (
-                      <div key={step.order} className={`flex items-start gap-2.5 rounded-[14px] px-3 py-2 ${step.optional ? "bg-[var(--foreground)]/3" : "bg-[var(--success-soft)]"}`}>
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--foreground)]/8 text-[10px] font-bold">{step.order}</span>
-                        <div>
-                          <p className="text-xs font-medium">{step.action.replace(/_/g, " ")} <span className="font-normal text-[var(--foreground)]/40">({step.engine})</span></p>
-                          <p className="mt-0.5 text-[11px] text-[var(--foreground)]/40">{step.description}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="mt-3 text-[11px] text-[var(--foreground)]/35">~{state.plan.estimatedTotalTokens.toLocaleString()} tokens estimated</p>
-                </motion.div>
-              )}
-
-              {/* Reference library */}
-              <div className="panel rounded-[24px] p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--foreground)]/40">
-                      <rect x="3" y="3" width="18" height="18" rx="2" />
-                      <circle cx="9" cy="9" r="2" />
-                      <path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21" />
-                    </svg>
-                    <span className="text-sm font-semibold">References</span>
-                  </div>
-                  <span className="text-[11px] text-[var(--foreground)]/35">{selectedReferenceIds.length}/{MAX_REFERENCES}</span>
-                </div>
-
-                <div className="flex flex-wrap gap-2 items-center">
-                  <div className="relative">
-                    <select value={selectedProjectId ?? "__global__"} onChange={(e) => handleProjectScopeChange(e.target.value)}
-                      className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer">
-                      <option value="__global__">Global</option>
-                      {projectOptions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
-                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
-                  </div>
-                  <div className="relative">
-                    <select value={uploadRole} onChange={(e) => setUploadRole(e.target.value === "primary" ? "primary" : "secondary")}
-                      className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer">
-                      <option value="primary">Primary</option>
-                      <option value="secondary">Secondary</option>
-                    </select>
-                    <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5l3 3 3-3" /></svg>
-                  </div>
-                  <label className="cursor-pointer rounded-full bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:opacity-90">
-                    {uploading ? "Uploading..." : "Upload"}
-                    <input type="file" accept="image/*" disabled={uploading} onChange={handleUploadFile} className="hidden" />
-                  </label>
-                </div>
-
-                {assetLoading ? (
-                  <p className="mt-3 text-xs text-[var(--foreground)]/40">Loading references...</p>
-                ) : assets.length > 0 ? (
-                  <div className="mt-3 grid gap-2">
-                    {assets.map((asset) => {
-                      const selected = selectedReferenceIds.includes(asset.id);
-                      const deleting = deletingAssetId === asset.id;
-                      return (
-                        <div key={asset.id} className="flex items-center gap-3 rounded-[16px] border border-[var(--line)] bg-white/50 px-3 py-2">
-                          <img src={`${apiBaseUrl}${asset.previewUrl}`} alt={asset.filename} className="h-10 w-10 rounded-lg border border-[var(--line)] object-cover" />
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-xs font-medium">{asset.filename}</p>
-                            <p className="text-[10px] text-[var(--foreground)]/35">{asset.role} · w{asset.weight.toFixed(2)}</p>
-                          </div>
-                          <button onClick={() => void handleSelectAsset(asset)} disabled={deleting}
-                            className={`rounded-full px-2.5 py-1 text-[10px] font-medium transition ${selected ? "bg-[var(--danger-soft)] text-[var(--danger)]" : "border border-[var(--line)] text-[var(--foreground)]/50 hover:bg-white"}`}>
-                            {selected ? "Remove" : "Select"}
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="mt-3 text-xs text-[var(--foreground)]/35">No references yet. Upload images to build context.</p>
-                )}
-                {assetError && <p className="mt-2 text-[11px] text-[var(--danger)]">{assetError}</p>}
-              </div>
-            </motion.div>
-          ) : (
-            /* ─── Runs tab ───────────────────────────── */
-            <motion.div
-              key="runs"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.25 }}
-              className="space-y-3"
-            >
-              {state.runs.map((run, i) => (
-                <motion.div
-                  key={run.id ?? run.title}
-                  initial={{ opacity: 0, x: -12 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: i * 0.05 }}
-                  className="panel rounded-[22px] px-5 py-4"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold truncate">{run.title}</p>
-                      <p className="mt-0.5 text-xs text-[var(--foreground)]/40">{run.engine} · {run.duration}</p>
-                    </div>
-                    <StatusBadge status={run.status} />
-                  </div>
-                  <p className="mt-2 text-xs text-[var(--foreground)]/35">Output: {run.output}</p>
-                  {run.id && run.status === "Completed" && (
-                    <div className="mt-2 flex items-center gap-1">
-                      {[1, 2, 3, 4, 5].map((s) => (
-                        <button key={s} onClick={() => handleScoreRun(run.id!, s)}
-                          className="h-6 w-6 rounded-full border border-[var(--line)] text-[10px] font-medium text-[var(--foreground)]/40 transition hover:bg-[var(--accent-warm)]/15 hover:text-[var(--accent-warm)]">
-                          {s}
-                        </button>
-                      ))}
-                      <span className="ml-1 text-[10px] text-[var(--foreground)]/25">score</span>
-                    </div>
-                  )}
-                </motion.div>
-              ))}
-              {state.runs.length === 0 && (
-                <div className="panel rounded-[22px] px-5 py-8 text-center">
-                  <p className="text-sm text-[var(--foreground)]/35">No runs yet. Start a generation to see results.</p>
-                </div>
-              )}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-
-      {/* ─── Right sidebar: Runs overview ──────────── */}
-      <div className="space-y-5">
-        <div className="panel-strong rounded-[24px] p-5">
-          <p className="text-xs uppercase tracking-wider text-[var(--foreground)]/30 mb-4">Recent Runs</p>
-          <div className="space-y-2">
-            {state.runs.slice(0, 6).map((run, i) => (
-              <motion.div
-                key={run.id ?? run.title}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: i * 0.04 }}
-                className="flex items-center justify-between rounded-[16px] px-3 py-2.5 transition hover:bg-white/60 cursor-default"
+        {promptPresets.length > 0 && (
+          <div className="mt-2.5 flex flex-wrap gap-1.5">
+            {promptPresets.slice(0, 3).map((preset) => (
+              <button
+                key={preset.id ?? preset.title}
+                onClick={() => applyPreset(preset)}
+                className="rounded-full border border-[var(--line)] bg-white/50 px-2.5 py-0.5 text-[11px] text-[var(--foreground)]/50 transition hover:bg-white/80 hover:text-[var(--foreground)]"
               >
-                <div className="min-w-0 flex-1">
-                  <p className="text-xs font-medium truncate">{run.title}</p>
-                  <p className="text-[10px] text-[var(--foreground)]/30">{run.duration}</p>
-                </div>
-                <StatusBadge status={run.status} small />
-              </motion.div>
+                {preset.title}
+              </button>
             ))}
           </div>
-        </div>
+        )}
 
-        {/* Overview stats */}
-        <div className="panel-strong rounded-[24px] p-5">
-          <p className="text-xs uppercase tracking-wider text-[var(--foreground)]/30 mb-4">Overview</p>
-          <div className="grid grid-cols-2 gap-3">
-            <StatBox value={completedRuns} label="Completed" color="var(--success)" />
-            <StatBox value={failedRuns} label="Failed" color="var(--danger)" />
-            <StatBox value={runningRuns} label="In progress" color="#4d7cfe" />
-            <StatBox value={state.mode === "image" ? "18s" : "2m 15s"} label="Avg. runtime" color="var(--foreground)" />
+        {/* Controls row */}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          {/* Mode toggle */}
+          <div className="flex rounded-full border border-[var(--line)] bg-white/40 p-0.5">
+            {(["image", "video"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => handleMode(m)}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition ${
+                  state.mode === m
+                    ? "bg-[var(--accent)] text-white shadow-sm"
+                    : "text-[var(--foreground)]/50 hover:text-[var(--foreground)]"
+                }`}
+              >
+                {m === "image" ? "Image" : "Video"}
+              </button>
+            ))}
           </div>
+
+          <Select
+            value={state.selectedModel}
+            onChange={(v) => dispatch({ type: "SET_MODEL", model: v })}
+            options={models.map((m) => ({ value: m, label: m }))}
+          />
+          <Select
+            value={state.ratio}
+            onChange={(v) => dispatch({ type: "SET_RATIO", ratio: v })}
+            options={ratios.map((r) => ({ value: r, label: r }))}
+          />
+          <Select
+            value={state.quality}
+            onChange={(v) => dispatch({ type: "SET_QUALITY", quality: v as (typeof qualityOptions)[number] })}
+            options={qualityOptions.map((q) => ({ value: q, label: q }))}
+          />
+
+          {state.mode === "image" && (
+            <Select
+              value={state.batch}
+              onChange={(v) => dispatch({ type: "SET_BATCH", batch: v })}
+              options={batchOptions.map((b) => ({ value: b, label: `${b}×` }))}
+            />
+          )}
+
+          {state.mode === "video" && (
+            <>
+              <Select
+                value={String(state.videoDuration)}
+                onChange={(v) => dispatch({ type: "SET_VIDEO_DURATION", duration: Number(v) as (typeof videoDurationOptions)[number] })}
+                options={videoDurationOptions.map((d) => ({ value: String(d), label: `${d}s` }))}
+                title="Clip length. 15s @ 60fps is very heavy."
+              />
+              <Select
+                value={String(state.videoFps)}
+                onChange={(v) => dispatch({ type: "SET_VIDEO_FPS", fps: Number(v) as (typeof videoFpsOptions)[number] })}
+                options={videoFpsOptions.map((f) => ({ value: String(f), label: `${f} fps` }))}
+                title="Playback rate. Wan 2.2 is trained near 16–24 fps."
+              />
+            </>
+          )}
+
+          <button
+            onClick={handleGenerate}
+            disabled={!canGenerate}
+            className="ml-auto rounded-full bg-[var(--accent)] px-5 py-2 text-xs font-semibold text-white shadow-sm transition hover:opacity-90 disabled:opacity-50"
+          >
+            {state.running ? "Generating..." : "Generate"}
+          </button>
         </div>
 
-        {/* Memory context */}
-        {state.memoryPrompts.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="panel rounded-[24px] p-5"
-          >
-            <p className="text-xs uppercase tracking-wider text-[var(--foreground)]/30 mb-3">Prompt Memory</p>
-            <div className="space-y-2">
-              {state.memoryPrompts.slice(0, 3).map((item) => (
-                <div key={item.id} className="rounded-[14px] border border-[var(--line)] bg-white/50 px-3 py-2">
-                  <p className="text-xs font-medium">{item.title}</p>
-                  <p className="mt-0.5 text-[10px] text-[var(--foreground)]/35">score {item.score}</p>
-                </div>
-              ))}
-            </div>
-          </motion.div>
+        {(state.submitError || state.runtimeNotice) && (
+          <div className="mt-3 space-y-1">
+            {state.submitError && <p className="text-xs text-[var(--danger)]">{state.submitError}</p>}
+            {state.runtimeNotice && <p className="text-xs text-[var(--foreground)]/55">{state.runtimeNotice}</p>}
+          </div>
         )}
       </div>
 
-      {/* ─── Floating notifications ────────────────── */}
-      <AnimatePresence>
-        {state.running && (
-          <motion.div
-            key="generating"
-            initial={{ opacity: 0, y: 18, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 18, scale: 0.95 }}
-            className="fixed bottom-5 right-5 panel-strong rounded-[20px] px-5 py-4 z-50"
-          >
-            <div className="flex items-center gap-3">
-              <motion.div
-                className="h-3 w-3 rounded-full bg-[var(--success)]"
-                animate={{ scale: [1, 1.3, 1], opacity: [1, 0.6, 1] }}
-                transition={{ repeat: Infinity, duration: 1.2 }}
-              />
-              <div>
-                <p className="text-sm font-medium">Generation in progress</p>
-                <p className="text-xs text-[var(--foreground)]/45">Routing model and processing output...</p>
-              </div>
+      {/* ─── References (collapsible) + Runs ─── */}
+      <div className="grid gap-5 md:grid-cols-[1fr_300px]">
+        {/* Runs list */}
+        <div className="panel rounded-[24px] p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-xs uppercase tracking-wider text-[var(--foreground)]/35">Runs</p>
+            <span className="text-[11px] text-[var(--foreground)]/30">{state.runs.length}</span>
+          </div>
+          {state.runs.length === 0 ? (
+            <p className="py-6 text-center text-xs text-[var(--foreground)]/35">No runs yet.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {state.runs.slice(0, 8).map((run) => {
+                const isPreviewed = state.preview?.runId === run.id;
+                return (
+                  <div
+                    key={run.id ?? run.title}
+                    className={`flex items-center gap-3 rounded-[14px] px-3 py-2 transition ${
+                      isPreviewed ? "bg-[var(--accent-warm)]/10" : "hover:bg-white/50"
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-xs font-medium">{run.title}</p>
+                      <p className="text-[10px] text-[var(--foreground)]/35">
+                        {run.engine} · {run.duration}
+                      </p>
+                    </div>
+                    <StatusBadge status={run.status} />
+                    {run.id && run.status === "Completed" && (
+                      <div className="flex items-center gap-0.5">
+                        {[1, 2, 3, 4, 5].map((s) => (
+                          <button
+                            key={s}
+                            onClick={() => handleScoreRun(run.id!, s)}
+                            className="h-5 w-5 rounded-full text-[9px] font-medium text-[var(--foreground)]/30 transition hover:bg-[var(--accent-warm)]/15 hover:text-[var(--accent-warm)]"
+                            title={`Score ${s}/5`}
+                          >
+                            {s}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          </motion.div>
-        )}
-        {state.lastScoreResult && (
-          <motion.div
-            key="scored"
-            initial={{ opacity: 0, y: 18, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 18, scale: 0.95 }}
-            className="fixed bottom-5 right-5 panel-strong rounded-[20px] px-5 py-4 z-50"
+          )}
+        </div>
+
+        {/* Reference library */}
+        <div className="panel rounded-[24px] p-5">
+          <button
+            type="button"
+            onClick={() => setShowReferences((prev) => !prev)}
+            className="flex w-full items-center justify-between"
           >
-            <div className="flex items-center justify-between gap-4">
-              <p className="text-sm font-medium">Scored {state.lastScoreResult.score.score}/5</p>
-              <button onClick={() => dispatch({ type: "DISMISS_SCORE" })} className="text-xs text-[var(--foreground)]/30 hover:text-[var(--foreground)]">dismiss</button>
-            </div>
-            <p className="mt-1 text-xs text-[var(--foreground)]/45">
-              {state.lastScoreResult.regeneration.shouldRegenerate ? state.lastScoreResult.regeneration.reason : "Score recorded."}
+            <p className="text-xs uppercase tracking-wider text-[var(--foreground)]/35">
+              References
             </p>
+            <span className="text-[11px] text-[var(--foreground)]/30">
+              {selectedReferenceIds.length}/{MAX_REFERENCES} · {showReferences ? "hide" : "show"}
+            </span>
+          </button>
+
+          {showReferences && (
+            <div className="mt-3 space-y-3">
+              <div className="flex items-center gap-2">
+                {projectOptions.length > 0 && (
+                  <Select
+                    value={selectedProjectId ?? "__global__"}
+                    onChange={handleProjectScopeChange}
+                    options={[
+                      { value: "__global__", label: "Global" },
+                      ...projectOptions.map((p) => ({ value: p.id, label: p.name }))
+                    ]}
+                  />
+                )}
+                <label className="ml-auto cursor-pointer rounded-full bg-[var(--accent)] px-3 py-1 text-[11px] font-medium text-white shadow-sm transition hover:opacity-90">
+                  {uploading ? "..." : "Upload"}
+                  <input type="file" accept="image/*" disabled={uploading} onChange={handleUploadFile} className="hidden" />
+                </label>
+              </div>
+
+              {assets.length === 0 ? (
+                <p className="py-4 text-center text-[11px] text-[var(--foreground)]/35">
+                  No references yet.
+                </p>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  {assets.map((asset) => {
+                    const selected = selectedReferenceIds.includes(asset.id);
+                    return (
+                      <div key={asset.id} className="group relative">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleAsset(asset)}
+                          className={`block aspect-square w-full overflow-hidden rounded-[12px] border transition ${
+                            selected
+                              ? "border-[var(--accent-warm)] ring-2 ring-[var(--accent-warm)]/30"
+                              : "border-[var(--line)] hover:border-[var(--foreground)]/20"
+                          }`}
+                        >
+                          <img
+                            src={`${API_BASE_URL}${asset.previewUrl}`}
+                            alt={asset.filename}
+                            className="h-full w-full object-cover"
+                          />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveAsset(asset.id)}
+                          className="absolute right-1 top-1 hidden h-5 w-5 items-center justify-center rounded-full bg-black/50 text-[11px] text-white group-hover:flex"
+                          title="Delete"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {assetError && <p className="text-[11px] text-[var(--danger)]">{assetError}</p>}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Sub-components ─────────────────────────────── */
+
+function PreviewPanel({
+  preview,
+  running,
+  onClear
+}: {
+  preview: PreviewState;
+  running: boolean;
+  onClear: () => void;
+}) {
+  return (
+    <div className="panel-strong rounded-[28px] p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-xs uppercase tracking-wider text-[var(--foreground)]/35">Preview</p>
+        {preview && (
+          <button
+            onClick={onClear}
+            className="text-[11px] text-[var(--foreground)]/35 transition hover:text-[var(--foreground)]/60"
+          >
+            clear
+          </button>
+        )}
+      </div>
+
+      <AnimatePresence mode="wait">
+        {preview && preview.outputs.length > 0 ? (
+          <motion.div
+            key={preview.runId}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            className={`grid gap-3 ${
+              preview.outputs.length > 1 ? "grid-cols-2 md:grid-cols-3" : "grid-cols-1"
+            }`}
+          >
+            {preview.outputs.map((output) => (
+              <PreviewItem key={output.url} output={output} />
+            ))}
+          </motion.div>
+        ) : (
+          <motion.div
+            key="empty"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="flex aspect-[16/9] items-center justify-center rounded-[20px] border border-dashed border-[var(--line)] bg-white/30"
+          >
+            {running ? (
+              <div className="flex flex-col items-center gap-3">
+                <motion.div
+                  className="h-2 w-2 rounded-full bg-[var(--accent-warm)]"
+                  animate={{ scale: [1, 1.6, 1], opacity: [1, 0.4, 1] }}
+                  transition={{ repeat: Infinity, duration: 1.2 }}
+                />
+                <p className="text-xs text-[var(--foreground)]/40">Generating...</p>
+              </div>
+            ) : (
+              <p className="text-xs text-[var(--foreground)]/35">
+                Your generated output will appear here
+              </p>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -1076,52 +706,78 @@ export function StudioWorkbench({
   );
 }
 
-/* ─── Sub-components ─────────────────────────────── */
-
-function NodeIcon({ type }: { type: string }) {
-  switch (type) {
-    case "Trigger":
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-warm)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="10" />
-        </svg>
-      );
-    case "Agent":
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4d7cfe" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="4" />
-          <circle cx="12" cy="12" r="3" />
-        </svg>
-      );
-    case "Process":
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--success)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
-        </svg>
-      );
-    default:
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--foreground)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity={0.4}>
-          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
-        </svg>
-      );
+function PreviewItem({ output }: { output: GenerationOutputRef }) {
+  const src = `${API_BASE_URL}${output.url}`;
+  if (output.kind === "video") {
+    return (
+      <video
+        src={src}
+        controls
+        autoPlay
+        loop
+        playsInline
+        className="w-full rounded-[20px] border border-[var(--line)] bg-black"
+      />
+    );
   }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={output.filename}
+      className="w-full rounded-[20px] border border-[var(--line)] object-contain"
+    />
+  );
 }
 
-function StatusBadge({ status, small }: { status: string; small?: boolean }) {
-  const base = small ? "px-2 py-0.5 text-[10px]" : "px-2.5 py-0.5 text-[11px]";
+function Select({
+  value,
+  onChange,
+  options,
+  title
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+  title?: string;
+}) {
+  return (
+    <div className="relative">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        title={title}
+        className="appearance-none rounded-full border border-[var(--line)] bg-white/60 pl-3 pr-7 py-1.5 text-xs font-medium text-[var(--foreground)]/70 outline-none transition hover:bg-white/80 focus:border-[var(--accent-warm)]/40 focus:ring-1 focus:ring-[var(--accent-warm)]/20 cursor-pointer"
+      >
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <svg
+        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--foreground)]/30"
+        viewBox="0 0 12 12"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M3 5l3 3 3-3" />
+      </svg>
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
   let color = "bg-[var(--foreground)]/5 text-[var(--foreground)]/40";
   if (status === "Completed") color = "bg-[var(--success-soft)] text-[var(--success)]";
   else if (status === "Running") color = "bg-blue-50 text-blue-600";
   else if (status === "Failed") color = "bg-[var(--danger-soft)] text-[var(--danger)]";
-  return <span className={`shrink-0 rounded-full font-medium ${base} ${color}`}>{status}</span>;
-}
-
-function StatBox({ value, label, color }: { value: string | number; label: string; color: string }) {
   return (
-    <div className="rounded-[16px] border border-[var(--line)] bg-white/50 px-3 py-3 text-center">
-      <p className="text-xl font-semibold tracking-tight" style={{ color }}>{value}</p>
-      <p className="mt-0.5 text-[10px] text-[var(--foreground)]/35">{label}</p>
-    </div>
+    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${color}`}>
+      {status}
+    </span>
   );
 }

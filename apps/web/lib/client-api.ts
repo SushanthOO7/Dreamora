@@ -203,6 +203,10 @@ export type StartGenerationRequest = {
   aspectRatio: string;
   quality: "Standard" | "High" | "Ultra";
   batchSize?: number;
+  /** Video-only. Target clip length in seconds (1–15). */
+  durationSeconds?: number;
+  /** Video-only. Container frame rate (16–60). */
+  fps?: number;
   projectId?: string;
   referenceAssetIds?: string[];
 };
@@ -216,6 +220,13 @@ export type StartGenerationResponse = {
   workflowPath: string | null;
 };
 
+export type GenerationOutputRef = {
+  kind: "image" | "video";
+  /** Relative URL served by the API; prefix with `NEXT_PUBLIC_API_URL` to use. */
+  url: string;
+  filename: string;
+};
+
 export type GenerationStatusResponse = {
   id: string;
   runId: string;
@@ -224,6 +235,7 @@ export type GenerationStatusResponse = {
   error: string | null;
   outputSummary: string | null;
   workflowPath: string | null;
+  outputs: GenerationOutputRef[];
   policy?: {
     policyVersion: string;
     shouldRegenerate: boolean;

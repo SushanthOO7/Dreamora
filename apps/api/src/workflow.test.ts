@@ -44,6 +44,8 @@ test("video workflow is Comfy API prompt JSON", async () => {
   const workflowPath = path.join(process.cwd(), "apps", "api", "workflows", "comfy-video-template.json");
   const rawTemplate = await readFile(workflowPath, "utf8");
   const raw = rawTemplate
+    .replaceAll("\"__LENGTH__\"", "121")
+    .replaceAll("\"__FPS__\"", "24")
     .replaceAll("__WIDTH__", "1280")
     .replaceAll("__HEIGHT__", "720")
     .replaceAll("__STEPS__", "20")
