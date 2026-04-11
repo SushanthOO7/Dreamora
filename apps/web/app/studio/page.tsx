@@ -1,11 +1,10 @@
 import { WorkspaceShell } from "../../components/workspace-shell";
 import { StudioWorkbench } from "../../components/studio-workbench";
-import { getProjects, getPrompts, getProviders, getRuns } from "../../lib/api";
+import { getProjects, getPrompts, getProviders } from "../../lib/api";
 
 export default async function StudioPage() {
-  const [providers, runs, prompts, projects] = await Promise.all([
+  const [providers, prompts, projects] = await Promise.all([
     getProviders(),
-    getRuns(),
     getPrompts(),
     getProjects()
   ]);
@@ -17,7 +16,6 @@ export default async function StudioPage() {
     >
       <StudioWorkbench
         providers={providers}
-        initialRuns={runs}
         promptPresets={prompts}
         projects={projects}
       />

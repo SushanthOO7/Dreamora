@@ -3,8 +3,7 @@
 import type {
   ProjectSummary,
   PromptPreset,
-  ProviderConfig,
-  RunSummary
+  ProviderConfig
 } from "@dreamora/shared";
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -13,7 +12,6 @@ import {
   deriveModelsFromProviders,
   getGenerationStatus,
   listAssets,
-  scoreRun,
   startGeneration,
   uploadAsset
 } from "../lib/client-api";
@@ -29,7 +27,7 @@ const MAX_REFERENCES = 5;
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 type PreviewState = {
-  runId: string;
+  jobId: string;
   outputs: GenerationOutputRef[];
 } | null;
 
@@ -45,7 +43,6 @@ type StudioState = {
   running: boolean;
   submitError: string;
   runtimeNotice: string;
-  runs: RunSummary[];
   preview: PreviewState;
 };
 
@@ -58,13 +55,11 @@ type StudioAction =
   | { type: "SET_VIDEO_FPS"; fps: (typeof videoFpsOptions)[number] }
   | { type: "SET_MODEL"; model: string }
   | { type: "SET_PROMPT"; text: string }
-  | { type: "START_GENERATE" }
-  | { type: "GENERATION_STARTED"; run: RunSummary; notice: string }
-  | { type: "GENERATION_POLL_UPDATE"; runId: string; updates: Partial<RunSummary> }
+  | { type: "START_GENERATE"; notice: string }
   | { type: "GENERATION_DONE" }
   | { type: "GENERATION_ERROR"; error: string }
   | { type: "SET_NOTICE"; notice: string }
-  | { type: "PREVIEW_SET"; runId: string; outputs: GenerationOutputRef[] }
+  | { type: "PREVIEW_SET"; jobId: string; outputs: GenerationOutputRef[] }
   | { type: "PREVIEW_CLEAR" };
 
 function studioReducer(state: StudioState, action: StudioAction): StudioState {
@@ -95,19 +90,12 @@ function studioReducer(state: StudioState, action: StudioAction): StudioState {
     case "SET_PROMPT":
       return { ...state, promptText: action.text };
     case "START_GENERATE":
-      return { ...state, running: true, submitError: "", runtimeNotice: "" };
-    case "GENERATION_STARTED":
       return {
         ...state,
-        runs: [action.run, ...state.runs].slice(0, 12),
-        runtimeNotice: action.notice
-      };
-    case "GENERATION_POLL_UPDATE":
-      return {
-        ...state,
-        runs: state.runs.map((run) =>
-          run.id === action.runId ? { ...run, ...action.updates } : run
-        )
+        running: true,
+        submitError: "",
+        runtimeNotice: action.notice,
+        preview: null
       };
     case "GENERATION_DONE":
       return { ...state, running: false };
@@ -118,7 +106,7 @@ function studioReducer(state: StudioState, action: StudioAction): StudioState {
     case "PREVIEW_SET":
       return {
         ...state,
-        preview: { runId: action.runId, outputs: action.outputs }
+        preview: { jobId: action.jobId, outputs: action.outputs }
       };
     case "PREVIEW_CLEAR":
       return { ...state, preview: null };
@@ -129,14 +117,12 @@ function studioReducer(state: StudioState, action: StudioAction): StudioState {
 
 type StudioWorkbenchProps = {
   providers: ProviderConfig[];
-  initialRuns: RunSummary[];
   promptPresets: PromptPreset[];
   projects: ProjectSummary[];
 };
 
 export function StudioWorkbench({
   providers,
-  initialRuns,
   promptPresets,
   projects
 }: StudioWorkbenchProps) {
@@ -166,7 +152,6 @@ export function StudioWorkbench({
     running: false,
     submitError: "",
     runtimeNotice: "",
-    runs: initialRuns,
     preview: null
   });
 
@@ -299,17 +284,7 @@ export function StudioWorkbench({
     else handleMode("image");
   }
 
-  async function handleScoreRun(runId: string, score: number) {
-    try {
-      await scoreRun(runId, score);
-      if (!mountedRef.current) return;
-      dispatch({ type: "SET_NOTICE", notice: `Scored ${score}/5.` });
-    } catch {
-      /* scoring is non-critical */
-    }
-  }
-
-  async function pollGeneration(jobId: string, runId: string, signal: AbortSignal) {
+  async function pollGeneration(jobId: string, signal: AbortSignal) {
     let attempts = 0;
     const maxAttempts = 240;
     while (attempts < maxAttempts && !signal.aborted) {
@@ -320,23 +295,13 @@ export function StudioWorkbench({
         const status = await getGenerationStatus(jobId);
         if (signal.aborted || !mountedRef.current) return;
         if (status.status === "completed") {
-          dispatch({
-            type: "GENERATION_POLL_UPDATE",
-            runId,
-            updates: { status: "Completed", output: status.outputSummary ?? undefined }
-          });
           if (status.outputs && status.outputs.length > 0) {
-            dispatch({ type: "PREVIEW_SET", runId, outputs: status.outputs });
+            dispatch({ type: "PREVIEW_SET", jobId, outputs: status.outputs });
           }
           dispatch({ type: "GENERATION_DONE" });
           return;
         }
         if (status.status === "failed") {
-          dispatch({
-            type: "GENERATION_POLL_UPDATE",
-            runId,
-            updates: { status: "Failed", duration: "Failed", output: status.error ?? "Generation failed" }
-          });
           dispatch({ type: "GENERATION_ERROR", error: status.error ?? "Generation failed." });
           return;
         }
@@ -359,11 +324,7 @@ export function StudioWorkbench({
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
-    dispatch({ type: "START_GENERATE" });
-    const now = new Date();
-    const runTitle = state.mode === "image"
-      ? `Image ${now.toLocaleTimeString()}`
-      : `Video ${now.toLocaleTimeString()}`;
+    dispatch({ type: "START_GENERATE", notice: "" });
     try {
       const started = await startGeneration({
         mode: state.mode, prompt: state.promptText, model: state.selectedModel,
@@ -375,17 +336,13 @@ export function StudioWorkbench({
         referenceAssetIds: selectedReferenceIds
       });
       if (controller.signal.aborted || !mountedRef.current) return;
-      const provisionalRun: RunSummary = {
-        id: started.runId, title: runTitle, engine: state.selectedModel,
-        status: "Running", duration: "Pending",
-        output: state.mode === "image" ? `${state.batch} image(s)` : `${state.ratio} clip`,
-        mode: state.mode
-      };
-      const notice = started.backend === "simulated"
-        ? (started.fallbackReason ? `Simulated (fallback: ${started.fallbackReason})` : "Simulated backend")
-        : "";
-      dispatch({ type: "GENERATION_STARTED", run: provisionalRun, notice });
-      await pollGeneration(started.jobId, started.runId, controller.signal);
+      if (started.backend === "simulated") {
+        const notice = started.fallbackReason
+          ? `Simulated (fallback: ${started.fallbackReason})`
+          : "Simulated backend";
+        dispatch({ type: "SET_NOTICE", notice });
+      }
+      await pollGeneration(started.jobId, controller.signal);
     } catch (error) {
       if (!mountedRef.current) return;
       dispatch({
@@ -506,56 +463,8 @@ export function StudioWorkbench({
         )}
       </div>
 
-      {/* ─── References (collapsible) + Runs ─── */}
-      <div className="grid gap-5 md:grid-cols-[1fr_300px]">
-        {/* Runs list */}
-        <div className="panel rounded-[24px] p-5">
-          <div className="mb-3 flex items-center justify-between">
-            <p className="text-xs uppercase tracking-wider text-[var(--foreground)]/35">Runs</p>
-            <span className="text-[11px] text-[var(--foreground)]/30">{state.runs.length}</span>
-          </div>
-          {state.runs.length === 0 ? (
-            <p className="py-6 text-center text-xs text-[var(--foreground)]/35">No runs yet.</p>
-          ) : (
-            <div className="space-y-1.5">
-              {state.runs.slice(0, 8).map((run) => {
-                const isPreviewed = state.preview?.runId === run.id;
-                return (
-                  <div
-                    key={run.id ?? run.title}
-                    className={`flex items-center gap-3 rounded-[14px] px-3 py-2 transition ${
-                      isPreviewed ? "bg-[var(--accent-warm)]/10" : "hover:bg-white/50"
-                    }`}
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-xs font-medium">{run.title}</p>
-                      <p className="text-[10px] text-[var(--foreground)]/35">
-                        {run.engine} · {run.duration}
-                      </p>
-                    </div>
-                    <StatusBadge status={run.status} />
-                    {run.id && run.status === "Completed" && (
-                      <div className="flex items-center gap-0.5">
-                        {[1, 2, 3, 4, 5].map((s) => (
-                          <button
-                            key={s}
-                            onClick={() => handleScoreRun(run.id!, s)}
-                            className="h-5 w-5 rounded-full text-[9px] font-medium text-[var(--foreground)]/30 transition hover:bg-[var(--accent-warm)]/15 hover:text-[var(--accent-warm)]"
-                            title={`Score ${s}/5`}
-                          >
-                            {s}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Reference library */}
+      {/* ─── Reference library (collapsible) ─── */}
+      <div>
         <div className="panel rounded-[24px] p-5">
           <button
             type="button"
@@ -664,7 +573,7 @@ function PreviewPanel({
       <AnimatePresence mode="wait">
         {preview && preview.outputs.length > 0 ? (
           <motion.div
-            key={preview.runId}
+            key={preview.jobId}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -770,14 +679,3 @@ function Select({
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  let color = "bg-[var(--foreground)]/5 text-[var(--foreground)]/40";
-  if (status === "Completed") color = "bg-[var(--success-soft)] text-[var(--success)]";
-  else if (status === "Running") color = "bg-blue-50 text-blue-600";
-  else if (status === "Failed") color = "bg-[var(--danger-soft)] text-[var(--danger)]";
-  return (
-    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${color}`}>
-      {status}
-    </span>
-  );
-}

@@ -449,29 +449,73 @@ async function fetchComfyHistory(promptId: string): Promise<ComfyHistoryResult> 
 
   const run = payload[promptId];
   if (!run) {
+    // Prompt is still queued or executing — Comfy only writes to /history once
+    // the prompt has finished (success or failure).
     return { status: "running" };
   }
 
-  const finished =
-    run.status?.completed === true ||
-    run.status_str === "success" ||
-    run.status?.status_str === "success";
+  // Completion detection must be tolerant across ComfyUI versions:
+  //   - some set `status.completed === true`
+  //   - some set `status.status_str === "success"` or top-level `status_str`
+  //   - some only emit an `execution_success` entry inside `status.messages`
+  //   - the mere presence of the entry in /history already implies execution
+  //     finished (ComfyUI does not move prompts to /history until they're done).
+  const messages: unknown[] = Array.isArray(run.status?.messages)
+    ? run.status.messages
+    : [];
+  const hasSuccessMessage = messages.some(
+    (entry) => Array.isArray(entry) && entry[0] === "execution_success"
+  );
+  const hasErrorMessage = messages.some(
+    (entry) =>
+      Array.isArray(entry) &&
+      (entry[0] === "execution_error" || entry[0] === "execution_interrupted")
+  );
+
+  const statusStr: string | undefined =
+    typeof run.status === "string"
+      ? run.status
+      : run.status?.status_str ?? run.status_str;
+
   const failed =
-    run.status_str === "error" ||
-    run.status?.status_str === "error";
+    statusStr === "error" ||
+    statusStr === "interrupted" ||
+    hasErrorMessage;
 
   if (failed) {
-    return {
-      status: "failed",
-      error: run.status?.messages?.[0]?.[1]?.exception_message ?? "Comfy run failed"
-    };
-  }
-
-  if (!finished) {
-    return { status: "running" };
+    // Try to pull a useful error message out of the messages blob.
+    let errorMessage = "Comfy run failed";
+    for (const entry of messages) {
+      if (
+        Array.isArray(entry) &&
+        (entry[0] === "execution_error" || entry[0] === "execution_interrupted")
+      ) {
+        const detail = entry[1] as Record<string, unknown> | undefined;
+        const candidate =
+          (detail?.exception_message as string | undefined) ??
+          (detail?.exception_type as string | undefined) ??
+          (detail?.node_type as string | undefined);
+        if (candidate) {
+          errorMessage = String(candidate);
+          break;
+        }
+      }
+    }
+    return { status: "failed", error: errorMessage };
   }
 
   const nodeOutputs = run.outputs ? Object.values(run.outputs) : [];
+
+  // If there are no outputs and no explicit success signal, the entry might
+  // still be mid-flight on some ComfyUI builds — keep polling.
+  if (
+    nodeOutputs.length === 0 &&
+    !hasSuccessMessage &&
+    run.status?.completed !== true &&
+    statusStr !== "success"
+  ) {
+    return { status: "running" };
+  }
   const collectedFiles: ComfyOutputFile[] = [];
 
   const collect = (arr: unknown, kind: ComfyOutputFile["kind"]): void => {
@@ -684,6 +728,14 @@ export function startComfyPolling(
       jobs.set(job.id, done);
       clearJobPoller(job.id);
       polling = false;
+      // Stdout log so the operator can verify completion + output capture from
+      // the API logs without enabling extra debugging.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[generation] job=${job.id} completed in ${duration} with ${
+          result.outputCount ?? 0
+        } output(s)`
+      );
       await onCompleted(result.outputCount ?? 0, duration);
     } catch (error) {
       const endTime = Date.now();

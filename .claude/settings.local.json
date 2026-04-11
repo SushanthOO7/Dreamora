@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(npx tsc:*)",
-      "Bash(node --import tsx --test apps/api/src/workflow.test.ts)"
+      "Bash(node --import tsx --test apps/api/src/workflow.test.ts)",
+      "Bash(pnpm typecheck:*)",
+      "Bash(npx tsx:*)"
     ]
   }
 }
